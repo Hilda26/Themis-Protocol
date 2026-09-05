@@ -1,0 +1,15 @@
+node_modules
+.next
+.env
+.env.local
+.env.test
+out
+.DS_Store
+*.log
+
+.vercel
+.genvm-home
+__pycache__/
+*.pyc
+artifacts/
+tsconfig.tsbuildinfo
