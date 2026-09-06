@@ -1,12 +1,32 @@
-/** wei-like u256 -> human GEN string. bigint throughout -- GEN's 18-decimal
- * wei amounts routinely exceed Number.MAX_SAFE_INTEGER. */
+/** wei-like u256 -> human GEN string. Amounts are ALWAYS denominated in GEN;
+ * the interface never shows raw wei, which is an implementation detail of the
+ * chain rather than a unit a reader thinks in.
+ *
+ * Formatted from the bigint directly rather than via Number, because GEN's
+ * 18-decimal amounts routinely exceed Number.MAX_SAFE_INTEGER and a float
+ * round-trip silently loses precision on exactly the large balances that
+ * matter most. Sub-display-precision dust renders as "< 0.000001 GEN" rather
+ * than rounding down to a misleading "0 GEN". */
 export function formatGen(amountWei: bigint): string {
   if (amountWei === 0n) return "0 GEN";
-  const whole = amountWei / 10n ** 18n;
-  const frac = amountWei % 10n ** 18n;
-  if (whole === 0n && frac < 100000000000000n) return `${amountWei} wei`;
-  const gen = Number(whole) + Number(frac) / 1e18;
-  return `${gen.toLocaleString(undefined, { maximumFractionDigits: 4 })} GEN`;
+
+  const negative = amountWei < 0n;
+  const value = negative ? -amountWei : amountWei;
+  const sign = negative ? "-" : "";
+
+  const whole = value / 10n ** 18n;
+  const frac = value % 10n ** 18n;
+
+  const DISPLAY_DECIMALS = 6;
+  let fracStr = frac.toString().padStart(18, "0").slice(0, DISPLAY_DECIMALS).replace(/0+$/, "");
+
+  if (whole === 0n && fracStr === "") {
+    // Non-zero, but smaller than the displayed precision.
+    return `${sign}< 0.000001 GEN`;
+  }
+
+  const wholeStr = whole.toLocaleString("en-US");
+  return `${sign}${fracStr ? `${wholeStr}.${fracStr}` : wholeStr} GEN`;
 }
 
 export function parseGenToWei(input: string): bigint | null {

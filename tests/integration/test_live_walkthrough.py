@@ -38,6 +38,12 @@ RULES = (
 
 EVIDENCE_URL = "https://en.wikipedia.org/wiki/Creative_Commons_license"
 
+# Escrow a realistic amount denominated in GEN. An earlier revision escrowed
+# 1000 wei, which is dust: the register then displayed a meaningless figure
+# for the flagship demo case. Amounts users see are always GEN.
+ESCROW_GEN = "0.01"
+ESCROW_WEI = 10 ** 16  # 0.01 GEN
+
 
 def _pace():
     time.sleep(_PACE_SECONDS)
@@ -130,7 +136,7 @@ def test_live_walkthrough_on_deployed_contract():
     print("case_id:", case_id)
     _pace()
 
-    tx = _with_retry(lambda: c_complainant.fund_case(args=[case_id]).transact(value=1000))
+    tx = _with_retry(lambda: c_complainant.fund_case(args=[case_id]).transact(value=ESCROW_WEI))
     assert tx_execution_succeeded(tx)
     _pace()
 

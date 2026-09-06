@@ -33,7 +33,7 @@ _PACE_SECONDS = 4
 _RATE_LIMIT_DEFAULT_BACKOFF = 65
 _MAX_RETRIES = 5
 
-ESCROW_WEI = 1000
+ESCROW_WEI = 10 ** 16  # 0.01 GEN -- a realistic escrow, not dust
 
 RULES = (
     "This template decides licence-compliance disputes over reused content. A work published "
@@ -157,7 +157,7 @@ def test_appeal_and_real_escrow_payout_on_studionet():
     _pace()
     funded = _with_retry(lambda: contract.get_case(args=[case_id]).call())["funded_wei"]
     assert int(funded) == ESCROW_WEI
-    print("escrowed on-chain:", funded, "wei")
+    print(f"escrowed on-chain: {funded} wei = {int(funded) / 10**18} GEN")
     _pace()
 
     tx = _with_retry(lambda: c_resp.respond_to_case(args=[
@@ -257,5 +257,5 @@ def test_appeal_and_real_escrow_payout_on_studionet():
     except Exception as e:
         print("second claim_settlement correctly reverted on-chain:", str(e)[:120])
 
-    print(f"\nDone: appeal exercised={appealed}, real escrow of {ESCROW_WEI} wei settled on-chain "
-          f"at {contract.address} case_id {case_id}")
+    print(f"\nDone: appeal exercised={appealed}, real escrow of {ESCROW_WEI / 10**18} GEN "
+          f"settled on-chain at {contract.address} case_id {case_id}")
