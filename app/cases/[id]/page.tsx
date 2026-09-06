@@ -23,6 +23,18 @@ const STATUS_TONE: Record<string, "neutral" | "success" | "warning" | "danger" |
   finalized: "success", settled: "success", settlement_failed: "danger",
 };
 
+
+/** Detects a URL whose visible text is engineered to read as one site while
+ * resolving to another: `https://reputable.example@attacker.test/x` fetches
+ * from attacker.test, but a reader skimming the string sees the reputable
+ * name first. Comparing parsed hosts cannot catch this -- every URL parser
+ * strips userinfo, so both sides would agree. The tell is userinfo being
+ * present in the authority at all. */
+function hasDeceptiveUserinfo(e: Evidence): boolean {
+  const authority = e.public_url.replace(/^https?:\/\//i, "").split(/[/?#]/)[0];
+  return authority.includes("@");
+}
+
 function eq(a?: string, b?: string) {
   return !!a && !!b && a.toLowerCase() === b.toLowerCase();
 }
@@ -153,6 +165,21 @@ export default function CaseDetailPage() {
                     </a>
                   </div>
                   <div>sha256 {shortHash(e.fetched_hash)}</div>
+                  {/* The host the content genuinely came from, parsed with
+                      userinfo stripped. A URL reading as one site can resolve
+                      to another, so the effective source is always shown. */}
+                  <div>
+                    fetched from{" "}
+                    <span className={hasDeceptiveUserinfo(e) ? "text-danger" : "text-ink"}>
+                      {e.source_host}
+                    </span>
+                  </div>
+                  {hasDeceptiveUserinfo(e) && (
+                    <div className="text-danger">
+                      URL embeds credentials before the host - it reads as one site but was
+                      fetched from {e.source_host}
+                    </div>
+                  )}
                 </div>
               </Card>
             ))}

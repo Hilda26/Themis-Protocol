@@ -3,7 +3,7 @@
 **A reusable, hardened AI-consensus dispute and attestation protocol on GenLayer.**
 
 **Live app:** https://themis-protocol.vercel.app
-**Contract (StudioNet):** [`0xC8b0dfc458731b84a671A051B8E5fF1972702153`](https://explorer-studio.genlayer.com/address/0xC8b0dfc458731b84a671A051B8E5fF1972702153)
+**Contract (StudioNet):** [`0x4bd8E1BD5adE4612Fa3D953170f484f9C97de099`](https://explorer-studio.genlayer.com/address/0x4bd8E1BD5adE4612Fa3D953170f484f9C97de099)
 **Source:** this repo (`contracts/Themis.py`)
 
 ## What it is
@@ -73,6 +73,12 @@ Applied from the first submission rather than after a review asked:
   by the deploying admin.
 - **Prompt-injection defence** with ASCII-only substitutes - Unicode lookalikes crashed a
   schema-compilation client in this author's Aura project even though the contract itself ran.
+- **Userinfo URL-spoofing defence.** `https://en.wikipedia.org@attacker.test/x` really
+  resolves to `attacker.test`, so evidence URLs are host-parsed with userinfo stripped at
+  submission. The true host is stored, disclosed to both judging panels next to the URL as
+  written, and shown in the register - with an explicit warning when a URL embeds credentials
+  before its host. There is no allowlist here by design, so this gates nothing; it exists so the
+  effective source is never ambiguous to a panel or to a human reading the record.
 - **Liveness exits.** `cancel_unfunded_case` closes out a case that was never funded;
   `resolve_stale_manual_review` lets anyone resolve a case whose app owner vanished, after a
   grace period, as an even unadjudicated split. Escrow can never be stranded by an absent owner.

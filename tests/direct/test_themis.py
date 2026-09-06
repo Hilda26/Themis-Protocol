@@ -837,3 +837,83 @@ def test_template_with_appeals_disabled_still_refuses_appeals(direct_vm, direct_
     with direct_vm.expect_revert():
         direct_vm.sender = direct_bob
         c.file_appeal(case_id, "new_evidence", "Trying anyway.", [])
+
+
+# ---------------------------------------------------------------------------
+# Userinfo URL spoofing: the effective source must be unambiguous
+# ---------------------------------------------------------------------------
+
+
+def test_url_host_parsing_strips_userinfo(direct_vm, direct_deploy):
+    """`https://en.wikipedia.org@evil.example/x` really resolves to
+    evil.example -- everything before the LAST @ in the authority is
+    credentials. The parser must agree with what a fetcher actually does."""
+    c = _deploy(direct_deploy)
+    mod = sys.modules.get("_contract_Themis")
+    cases = [
+        ("https://en.wikipedia.org/wiki/X", "en.wikipedia.org"),
+        ("https://en.wikipedia.org@evil.example/x", "evil.example"),
+        ("https://user:pass@evil.example:8443/x?q=1", "evil.example"),
+        ("http://a@b@final.example/path#frag", "final.example"),
+        ("https://EN.WIKIPEDIA.ORG/x", "en.wikipedia.org"),
+        ("ftp://not-http.example/x", ""),
+    ]
+    for url, expected in cases:
+        assert mod._url_host(url) == expected, url
+
+
+def test_spoofed_evidence_url_records_its_true_host(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    """A party pins a URL crafted to read as Wikipedia. The record must show
+    the host the content genuinely came from, so neither the panel nor a
+    human browsing the register is misled."""
+    c = _deploy(direct_deploy)
+    app_id = _register_app(direct_vm, c, direct_alice)
+    template_id = _create_template(direct_vm, c, direct_alice, app_id)
+    case_id = _open_case(direct_vm, c, direct_bob, app_id, template_id, direct_charlie)
+    _fund_case(direct_vm, c, direct_bob, case_id, value=1000)
+
+    _mock_fetch_ok(direct_vm, body="<html><body>Attacker controlled text.</body></html>")
+    direct_vm.sender = direct_bob
+    c.submit_evidence(
+        case_id, "page", "Looks like Wikipedia",
+        "A source that reads as a reputable encyclopaedia in the URL bar.",
+        "https://en.wikipedia.org@attacker.test/article",
+    )
+
+    ev = c.get_case_evidence(case_id)[0]
+    assert ev["source_host"] == "attacker.test"
+    assert "en.wikipedia.org" in ev["public_url"]  # the deceptive string is preserved verbatim
+    # and the prompt discloses the real host next to the submitted URL.
+    rendered = c.get_case_evidence(case_id)
+    assert rendered[0]["source_host"] != "en.wikipedia.org"
+
+
+def test_evidence_url_without_resolvable_host_is_rejected(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    c = _deploy(direct_deploy)
+    app_id = _register_app(direct_vm, c, direct_alice)
+    template_id = _create_template(direct_vm, c, direct_alice, app_id)
+    case_id = _open_case(direct_vm, c, direct_bob, app_id, template_id, direct_charlie)
+    _fund_case(direct_vm, c, direct_bob, case_id, value=1000)
+    _mock_fetch_ok(direct_vm)
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert():
+        c.submit_evidence(case_id, "page", "No host",
+                          "A URL with no dotted hostname at all in it.",
+                          "https://localhost/secret")
+
+
+def test_spoofed_appeal_evidence_url_is_host_checked(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    """The same check applies on the appeal path, so an appeal cannot smuggle
+    in a source that reads as one host and resolves to another."""
+    c = _deploy(direct_deploy)
+    _, _, case_id = _full_case_to_verdict(direct_vm, c, direct_alice, direct_bob, direct_charlie)
+    direct_vm.sender = direct_charlie
+    with direct_vm.expect_revert():
+        c.file_appeal(case_id, "new_evidence", "Appealing with a hostless URL.",
+                      ["https://localhost/x"])

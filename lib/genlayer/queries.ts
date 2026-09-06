@@ -65,6 +65,7 @@ export type Evidence = {
   title: string;
   statement: string;
   public_url: string;
+  source_host: string;
   submitted_at: number;
   fetched_hash: string;
   fetch_ok: boolean;

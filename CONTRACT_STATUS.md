@@ -94,7 +94,17 @@ is the regression guard.
 4. **Settlement bands snapped inside the consensus block**, so the value validators agree on is
    exactly the value the payout reads - two raw splits straddling a payout boundary can never
    pass as "materially the same".
-5. **ASCII-only source.** A Unicode em-dash left in a comment crashed the schema-compilation
+5. **Userinfo URL-spoofing defence.** Everything before the last `@` in a URL's authority is
+   credentials, so `https://en.wikipedia.org@attacker.test/x` fetches from `attacker.test` while
+   reading as Wikipedia. Evidence and appeal URLs are host-parsed at submission (`_url_host`,
+   the same parsing a CoverPool review required in this series), the true host is stored on the
+   record, and it is disclosed to both panels beside the URL as written, with the prompt told to
+   weigh a mismatch against whoever submitted it. The register shows the effective host too and
+   flags any URL carrying userinfo. Because evidence sources are open by design there is no
+   allowlist to bypass - this exists purely so the effective source is unambiguous to a panel and
+   to a human reading the record. Four tests cover it, including the parser agreeing with real
+   fetcher behaviour across userinfo, ports, multiple `@`, case and scheme variations.
+6. **ASCII-only source.** A Unicode em-dash left in a comment crashed the schema-compilation
    client with a `UnicodeEncodeError` while `genvm-lint` and every direct test passed cleanly -
    the same class of failure this author's Aura project hit. The source is now verified pure
    ASCII as a build step.
@@ -108,7 +118,7 @@ is the regression guard.
 
 `tests/direct/test_themis.py` + `tests/direct/conftest.py`.
 
-**38 tests, 38 passed (100%).**
+**42 tests, 42 passed (100%).**
 
 Coverage: app registration and validation; template creation (owner-only, verdict-category
 validation); role grant/revoke; protocol fee administration (non-admin rejected, cap enforced);
@@ -189,5 +199,5 @@ contract decision rather than a model one. Two tests pin both directions:
 
 ## Deployment
 
-`0xC8b0dfc458731b84a671A051B8E5fF1972702153` on StudioNet, schema verified via
+`0x4bd8E1BD5adE4612Fa3D953170f484f9C97de099` on StudioNet, schema verified via
 `genlayer schema <address>` to match source exactly.
