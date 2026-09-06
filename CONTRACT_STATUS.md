@@ -4,7 +4,7 @@
 
 Themis is a hardened rebuild of an existing reference design for AI-consensus dispute
 resolution. It closes two concrete gaps in that design, applies every lesson this author's prior
-GenLayer review cycles taught, and fixes two further bugs that only a real deployment could
+GenLayer review cycles taught, and fixes three further bugs that only a real deployment could
 surface.
 
 ## The two gaps in the reference design that this project closes
@@ -24,10 +24,10 @@ surface.
    using **ASCII-only** substitutes (`(((` / `)))`), and the prompt states that fenced text is
    untrusted quoted content and never an instruction.
 
-## Two bugs only a real deployed run could surface
+## Three bugs only a real deployed run could surface
 
-Both are recorded here deliberately, because each is evidence that the pipeline deploys and
-exercises against real infrastructure before any status document is written.
+All three are recorded here deliberately, because each is evidence that the pipeline deploys
+and exercises against real infrastructure before any status document is written.
 
 ### Consensus could never finalize (rounds silently returned UNDETERMINED)
 
@@ -77,6 +77,24 @@ body), stripping any residual markup - script/style bodies dropped entirely, tag
 entities decoded, whitespace collapsed - and raising the caps to hold real article text
 (8000 chars per URL, 30000 total). `test_recorded_evidence_strips_markup_and_keeps_readable_text`
 is the regression guard.
+
+### The judging model could veto a party's right to appeal
+
+`appeal_allowed` was computed as `verdict_data["appeal_allowed"] and template.appeal_enabled` -
+so the same model that had just decided against a party could also strip that party's right to
+have the decision reviewed. On confident verdicts it reliably returned false, which meant the
+losing side had no recourse in exactly the cases where it most wanted one, and the appeal path
+was unreachable in practice - the first live settlement run reported `appeal exercised=False`
+because the panel had closed the door.
+
+Recourse is a due-process property: it belongs to the app's policy (`appeal_enabled`) and to the
+structural bounds already in the contract (one appeal per case, inside the template's window),
+not to the judging model's opinion. `appeal_allowed` is now `template.appeal_enabled`; the
+model's view is still recorded as commentary but gates nothing.
+`resolve_manual_review` still sets it false deliberately - that is the app owner's final call, a
+contract decision rather than a model one. Two tests pin both directions:
+`test_model_cannot_veto_a_partys_right_to_appeal` and
+`test_template_with_appeals_disabled_still_refuses_appeals`.
 
 ## Lessons carried in from this author's prior projects, applied from day one
 
@@ -169,7 +187,7 @@ run against real validators at all. This suite runs open -> fund -> respond -> e
 -> verdict -> file_appeal -> request_appeal_review -> finalize -> claim_settlement entirely
 on-chain, with a `split_payment` template so the escrow genuinely leaves the contract.
 
-Result: 1000 wei escrowed and confirmed via `funded_wei`; verdict round ACCEPTED
+Result: 0.01 GEN escrowed and confirmed via `funded_wei`; verdict round ACCEPTED
 (`respondent_wins`, 0/10000); appeal filed with its evidence snapshotted at filing time; appeal
 review round ACCEPTED, returning `appeal_rejected` and moving the case to `finalized`;
 `claim_settlement` ACCEPTED and the case `settled` with `payout_claimed` true; and a second
@@ -178,24 +196,6 @@ review round ACCEPTED, returning `appeal_rejected` and moving the case to `final
 Together the three suites prove all of it: the protocol decides correctly when the record
 supports a decision, refuses to decide when it does not, hears an appeal against the recorded
 dossier, and pays out real escrow exactly once.
-
-### The judging model could veto a party's right to appeal
-
-`appeal_allowed` was computed as `verdict_data["appeal_allowed"] and template.appeal_enabled` -
-so the same model that had just decided against a party could also strip that party's right to
-have the decision reviewed. On confident verdicts it reliably returned false, which meant the
-losing side had no recourse in exactly the cases where it most wanted one, and the appeal path
-was unreachable in practice - the first live settlement run reported `appeal exercised=False`
-because the panel had closed the door.
-
-Recourse is a due-process property: it belongs to the app's policy (`appeal_enabled`) and to the
-structural bounds already in the contract (one appeal per case, inside the template's window),
-not to the judging model's opinion. `appeal_allowed` is now `template.appeal_enabled`; the
-model's view is still recorded as commentary but gates nothing.
-`resolve_manual_review` still sets it false deliberately - that is the app owner's final call, a
-contract decision rather than a model one. Two tests pin both directions:
-`test_model_cannot_veto_a_partys_right_to_appeal` and
-`test_template_with_appeals_disabled_still_refuses_appeals`.
 
 ## Deployment
 

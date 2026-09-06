@@ -16,8 +16,8 @@ prompt, so a party can type a counterfeit "recorded evidence" block into their o
 Themis defangs the fence sequence out of every party string and every fetched excerpt using
 ASCII-only substitutes, and tells the panel that fenced text is untrusted quoted content.
 
-Three further bugs were found and fixed that no mocked test could have surfaced, and both are
-documented rather than quietly patched. Consensus could never finalize: an early revision
+Three further bugs were found and fixed that no mocked test could have surfaced, and all three
+are documented rather than quietly patched. Consensus could never finalize: an early revision
 compared seven independently-generated fields for strict equality, including free-text reason
 codes, so rounds returned UNDETERMINED (status 6) and committed nothing - while the standard
 test helper still reported success, because it inspects only the leader receipt. And the record
@@ -42,10 +42,11 @@ Measured results: lint clean (32 methods, 14 view / 18 write), source verified p
 42/42 direct tests passing, including adversarial tests that actually attack the injection
 defence and the userinfo URL-spoofing vector (`https://en.wikipedia.org@attacker.test/x` reads as
 Wikipedia but fetches from attacker.test - the true host is parsed, stored, disclosed to both
-panels and flagged in the register). Three real StudioNet integration suites, all reaching consensus on the first attempt and
-all asserting on the consensus status rather than the leader receipt - including one that runs
-the full lifecycle through appeal and a real escrow payout on-chain (1000 wei escrowed, appeal
-filed and reviewed, settlement ACCEPTED, second claim rejected).
+panels and flagged in the register). Three real StudioNet integration suites, all reaching consensus on
+the first attempt and all asserting on the consensus status rather than the leader receipt -
+including one that runs the full lifecycle through appeal and a real escrow payout on-chain
+(0.01 GEN escrowed, appeal filed and reviewed, settlement ACCEPTED, second claim rejected).
+
 Together they prove both halves of the guarantee: against irrelevant evidence the panel refused
 to invent a winner ("Both submitted evidence snapshots are irrelevant Wikipedia pages... so the
 case cannot be decided on the record"), and against evidence that genuinely substantiates the

@@ -85,7 +85,7 @@ Applied from the first submission rather than after a review asked:
 
 ## Three bugs only a real deployment could surface
 
-Both were found by deploying to StudioNet and reading what actually came back, not by any
+All three were found by deploying to StudioNet and reading what actually came back, not by any
 mocked test. They are documented in full in `CONTRACT_STATUS.md`.
 
 1. **Consensus could never finalize.** An early revision compared seven independently-generated
