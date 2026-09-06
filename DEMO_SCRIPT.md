@@ -91,5 +91,5 @@ Scroll to the Verdict block.
 
 - A real `request_verdict` round takes minutes. Narrate over the already-decided case rather
   than waiting on camera, or cut to the result.
-- Contract: `0x4bd8E1BD5adE4612Fa3D953170f484f9C97de099`
-- Explorer: https://explorer-studio.genlayer.com/address/0x4bd8E1BD5adE4612Fa3D953170f484f9C97de099
+- Contract: `0xf60ED1100DcCb7A61fbB42B2aeb05d96aD865959`
+- Explorer: https://explorer-studio.genlayer.com/address/0xf60ED1100DcCb7A61fbB42B2aeb05d96aD865959

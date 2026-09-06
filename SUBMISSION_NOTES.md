@@ -62,6 +62,6 @@ consensus round against the recorded dossier.
 
 Live app: https://themis-protocol.vercel.app
 Source: https://github.com/Hilda26/Themis-Protocol
-Contract (StudioNet): 0x4bd8E1BD5adE4612Fa3D953170f484f9C97de099
+Contract (StudioNet): 0xf60ED1100DcCb7A61fbB42B2aeb05d96aD865959
 Full design rationale: DECISION_RECORD.md
 Contract test/deploy detail: CONTRACT_STATUS.md

@@ -199,5 +199,5 @@ dossier, and pays out real escrow exactly once.
 
 ## Deployment
 
-`0x4bd8E1BD5adE4612Fa3D953170f484f9C97de099` on StudioNet, schema verified via
+`0xf60ED1100DcCb7A61fbB42B2aeb05d96aD865959` on StudioNet, schema verified via
 `genlayer schema <address>` to match source exactly.
