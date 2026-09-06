@@ -3,7 +3,7 @@
 **A reusable, hardened AI-consensus dispute and attestation protocol on GenLayer.**
 
 **Live app:** https://themis-protocol.vercel.app
-**Contract (StudioNet):** [`0xCd5ae93Dfd6FCFEbE12D06871c3018fB38484ca9`](https://explorer-studio.genlayer.com/address/0xCd5ae93Dfd6FCFEbE12D06871c3018fB38484ca9)
+**Contract (StudioNet):** [`0xC8b0dfc458731b84a671A051B8E5fF1972702153`](https://explorer-studio.genlayer.com/address/0xC8b0dfc458731b84a671A051B8E5fF1972702153)
 **Source:** this repo (`contracts/Themis.py`)
 
 ## What it is
@@ -77,7 +77,7 @@ Applied from the first submission rather than after a review asked:
   `resolve_stale_manual_review` lets anyone resolve a case whose app owner vanished, after a
   grace period, as an even unadjudicated split. Escrow can never be stranded by an absent owner.
 
-## Two bugs only a real deployment could surface
+## Three bugs only a real deployment could surface
 
 Both were found by deploying to StudioNet and reading what actually came back, not by any
 mocked test. They are documented in full in `CONTRACT_STATUS.md`.
@@ -93,6 +93,11 @@ mocked test. They are documented in full in `CONTRACT_STATUS.md`.
    the raw HTTP body, which for any real page is `<head>` boilerplate. Every panel correctly but
    uselessly ruled `insufficient_evidence`. Fixed by rendering to readable text, stripping
    markup, and raising the caps to hold real article text.
+3. **The judging model could veto a party's right to appeal.** `appeal_allowed` was ANDed with
+   the model's own opinion, so the model that had just ruled against a party could also deny it a
+   review - and on confident verdicts it reliably did, making the appeal path unreachable.
+   Recourse now follows the app's policy and the contract's structural bounds (one appeal, one
+   window), never the model's view.
 
 ## Stack
 

@@ -108,7 +108,7 @@ is the regression guard.
 
 `tests/direct/test_themis.py` + `tests/direct/conftest.py`.
 
-**33 tests, 33 passed (100%).**
+**38 tests, 38 passed (100%).**
 
 Coverage: app registration and validation; template creation (owner-only, verdict-category
 validation); role grant/revoke; protocol fee administration (non-admin rejected, cap enforced);
@@ -121,6 +121,14 @@ non-party rejection; finalization windows; settlement splits, double-claim rejec
 fee deduction, and non-monetary settlement moving no funds; checks-effects-interactions ordering;
 the stale-manual-review liveness exit before and after its grace period; and a structural
 signature guard on `request_verdict`.
+
+**Adversarial coverage.** Three tests attack the injection defence directly rather than
+asserting it in prose: a complainant who types a counterfeit `<<<RECORDED EVIDENCE>>>` block into
+their case summary, a respondent who plants the same block in their answer and in every evidence
+field, and a hostile page whose HTML entities decode into live fence markers. In each case the
+delimiters must not survive into storage, the wording must survive (so the panel can see and
+weigh the attempt rather than it silently vanishing), and the digest must bind the defanged bytes
+that are actually stored and shown.
 
 ## Integration tests (real StudioNet)
 
@@ -144,10 +152,42 @@ not include the NonCommercial restriction. The recorded licence evidence confirm
 reuse is permitted when attribution is given and the derivative is released under the same terms,
 both of which respondent satisfied."*
 
-Together the two suites prove both halves of the guarantee: the protocol decides correctly when
-the record supports a decision, and refuses to decide when it does not.
+`tests/integration/test_settlement_and_appeal_studionet.py` - the two paths the other suites do
+not reach: the **appeal round** and a **real escrow payout**. Everything about money movement was
+otherwise proven only in direct mode with a monkeypatched `_pay`, and the appeal panel had never
+run against real validators at all. This suite runs open -> fund -> respond -> evidence -> close
+-> verdict -> file_appeal -> request_appeal_review -> finalize -> claim_settlement entirely
+on-chain, with a `split_payment` template so the escrow genuinely leaves the contract.
+
+Result: 1000 wei escrowed and confirmed via `funded_wei`; verdict round ACCEPTED
+(`respondent_wins`, 0/10000); appeal filed with its evidence snapshotted at filing time; appeal
+review round ACCEPTED, returning `appeal_rejected` and moving the case to `finalized`;
+`claim_settlement` ACCEPTED and the case `settled` with `payout_claimed` true; and a second
+`claim_settlement` correctly rejected on-chain.
+
+Together the three suites prove all of it: the protocol decides correctly when the record
+supports a decision, refuses to decide when it does not, hears an appeal against the recorded
+dossier, and pays out real escrow exactly once.
+
+### The judging model could veto a party's right to appeal
+
+`appeal_allowed` was computed as `verdict_data["appeal_allowed"] and template.appeal_enabled` -
+so the same model that had just decided against a party could also strip that party's right to
+have the decision reviewed. On confident verdicts it reliably returned false, which meant the
+losing side had no recourse in exactly the cases where it most wanted one, and the appeal path
+was unreachable in practice - the first live settlement run reported `appeal exercised=False`
+because the panel had closed the door.
+
+Recourse is a due-process property: it belongs to the app's policy (`appeal_enabled`) and to the
+structural bounds already in the contract (one appeal per case, inside the template's window),
+not to the judging model's opinion. `appeal_allowed` is now `template.appeal_enabled`; the
+model's view is still recorded as commentary but gates nothing.
+`resolve_manual_review` still sets it false deliberately - that is the app owner's final call, a
+contract decision rather than a model one. Two tests pin both directions:
+`test_model_cannot_veto_a_partys_right_to_appeal` and
+`test_template_with_appeals_disabled_still_refuses_appeals`.
 
 ## Deployment
 
-`0xCd5ae93Dfd6FCFEbE12D06871c3018fB38484ca9` on StudioNet, schema verified via
+`0xC8b0dfc458731b84a671A051B8E5fF1972702153` on StudioNet, schema verified via
 `genlayer schema <address>` to match source exactly.

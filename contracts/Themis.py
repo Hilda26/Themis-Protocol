@@ -1072,7 +1072,20 @@ class ThemisProtocol(gl.Contract):
             confidence=u256(verdict_data["confidence"]),
             evidence_alignment=verdict_data["evidence_alignment"],
             rule_fit=verdict_data["rule_fit"],
-            appeal_allowed=verdict_data["appeal_allowed"] and template.appeal_enabled,
+            # Recourse is governed by the APP'S POLICY and by structural
+            # bounds (one appeal per case, inside the template's window) --
+            # never by the judging model's opinion. An earlier revision used
+            # `verdict_data["appeal_allowed"] and template.appeal_enabled`,
+            # which let the same model that just decided against a party also
+            # strip that party's right to have the decision reviewed. On
+            # confident verdicts it reliably returned false, so the losing
+            # side had no recourse precisely when it most wanted one, and the
+            # appeal path was unreachable in practice. The model's opinion is
+            # still recorded in the reason fields as commentary; it no longer
+            # gates anything. `resolve_manual_review` still sets this false
+            # deliberately -- that is the app owner's final call, a contract
+            # decision rather than a model one.
+            appeal_allowed=template.appeal_enabled,
             reason_code=verdict_data["reason_code"],
             short_reason=verdict_data["short_reason"],
             issued_at=u256(_now()),

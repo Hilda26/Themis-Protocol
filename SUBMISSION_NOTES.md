@@ -16,7 +16,7 @@ prompt, so a party can type a counterfeit "recorded evidence" block into their o
 Themis defangs the fence sequence out of every party string and every fetched excerpt using
 ASCII-only substitutes, and tells the panel that fenced text is untrusted quoted content.
 
-Two further bugs were found and fixed that no mocked test could have surfaced, and both are
+Three further bugs were found and fixed that no mocked test could have surfaced, and both are
 documented rather than quietly patched. Consensus could never finalize: an early revision
 compared seven independently-generated fields for strict equality, including free-text reason
 codes, so rounds returned UNDETERMINED (status 6) and committed nothing - while the standard
@@ -24,7 +24,11 @@ test helper still reported success, because it inspects only the leader receipt.
 captured no readable content: evidence was stored as the first 1500 bytes of the raw HTTP body,
 which for any real page is head boilerplate, so every panel correctly but uselessly ruled
 insufficient_evidence. That one was caught by reading a real verdict's own words - it said the
-snapshot was "a truncated Wikipedia HTML page with no readable licence text".
+snapshot was "a truncated Wikipedia HTML page with no readable licence text". And the judging
+model could veto a party's right to appeal: appeal availability was ANDed with the model's own
+opinion, so on confident verdicts the losing side lost its recourse precisely when it most wanted
+it, and the appeal path was unreachable in practice. Recourse now follows the app's policy and
+the contract's structural bounds, never the model's view.
 
 Every lesson from this author's prior GenLayer review cycles is applied from the first
 submission: checks-effects-interactions (state flips terminal before any transfer, proven by a
@@ -35,8 +39,11 @@ escape hatch for a case whose app owner vanished, resolving conservatively as an
 unadjudicated split so escrow can never be stranded.
 
 Measured results: lint clean (32 methods, 14 view / 18 write), source verified pure ASCII.
-33/33 direct tests passing. Two real StudioNet integration suites, both reaching consensus on the
-first attempt and both asserting on the consensus status rather than the leader receipt.
+38/38 direct tests passing, including three adversarial tests that actually attack the injection
+defence. Three real StudioNet integration suites, all reaching consensus on the first attempt and
+all asserting on the consensus status rather than the leader receipt - including one that runs
+the full lifecycle through appeal and a real escrow payout on-chain (1000 wei escrowed, appeal
+filed and reviewed, settlement ACCEPTED, second claim rejected).
 Together they prove both halves of the guarantee: against irrelevant evidence the panel refused
 to invent a winner ("Both submitted evidence snapshots are irrelevant Wikipedia pages... so the
 case cannot be decided on the record"), and against evidence that genuinely substantiates the
@@ -52,6 +59,6 @@ consensus round against the recorded dossier.
 
 Live app: https://themis-protocol.vercel.app
 Source: https://github.com/Hilda26/Themis-Protocol
-Contract (StudioNet): 0xCd5ae93Dfd6FCFEbE12D06871c3018fB38484ca9
+Contract (StudioNet): 0xC8b0dfc458731b84a671A051B8E5fF1972702153
 Full design rationale: DECISION_RECORD.md
 Contract test/deploy detail: CONTRACT_STATUS.md
