@@ -50,6 +50,8 @@ export default function CaseDetailPage() {
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const [appeal, setAppeal] = useState<Appeal | null>(null);
   const [stale, setStale] = useState(false);
+  const [evidenceLoaded, setEvidenceLoaded] = useState(true);
+  const [partialError, setPartialError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
@@ -69,11 +71,26 @@ export default function CaseDetailPage() {
     try {
       const cs = await getCase(caseId);
       setCase(cs);
-      const [ev, vd, ap, tpl] = await Promise.all([
+
+      // allSettled, not all: one dropped read must not blank out every other
+      // section. A section that failed to load is reported as such rather
+      // than rendering as "none", which would state something false about
+      // the record with confidence.
+      const [ev, vd, ap, tpl] = await Promise.allSettled([
         getCaseEvidence(caseId), getCaseVerdict(caseId), getCaseAppeal(caseId), getTemplate(cs.template_id),
       ]);
-      setEvidence(ev); setVerdict(vd); setAppeal(ap); setTemplate(tpl);
-      if (cs.status === "manual_review_required") setStale(await isManualReviewStale(caseId));
+      if (ev.status === "fulfilled") { setEvidence(ev.value); setEvidenceLoaded(true); }
+      else setEvidenceLoaded(false);
+      if (vd.status === "fulfilled") setVerdict(vd.value);
+      if (ap.status === "fulfilled") setAppeal(ap.value);
+      if (tpl.status === "fulfilled") setTemplate(tpl.value);
+
+      const failed = [ev, vd, ap, tpl].filter((r) => r.status === "rejected").length;
+      setPartialError(failed > 0 ? "Some parts of this record could not be loaded just now. Reload to try again." : null);
+
+      if (cs.status === "manual_review_required") {
+        try { setStale(await isManualReviewStale(caseId)); } catch { /* non-critical */ }
+      }
     } catch (e: any) {
       setError(String(e?.message || e));
     }
@@ -142,7 +159,11 @@ export default function CaseDetailPage() {
           recordings -- the live page is never fetched again.
         </p>
         {evidence.length === 0 ? (
-          <Notice>No evidence has been submitted.</Notice>
+          <Notice tone={evidenceLoaded ? "info" : "error"}>
+            {evidenceLoaded
+              ? "No evidence has been submitted."
+              : "The evidence record could not be loaded just now -- reload to try again. This is a display problem, not a statement about the case."}
+          </Notice>
         ) : (
           <div className="space-y-3">
             {evidence.map((e) => (
@@ -228,6 +249,7 @@ export default function CaseDetailPage() {
         </section>
       )}
 
+      {partialError && <Notice tone="error">{partialError}</Notice>}
       {error && <Notice tone="error">{error}</Notice>}
       {txHash && (
         <Notice tone="success">

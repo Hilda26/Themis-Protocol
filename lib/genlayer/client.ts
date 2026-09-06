@@ -104,8 +104,38 @@ export async function writeAndWait(functionName: string, args: any[], value: big
   return { hash: txHash, explorerUrl: `${GENLAYER_STUDIONET.explorerUrl}/tx/${txHash}`, receipt };
 }
 
-export async function read(functionName: string, args: any[] = []): Promise<any> {
-  const client = await getGenLayerReadClient();
+/** Reads retry on transient transport failures.
+ *
+ * The Studio RPC intermittently drops a request with "Failed to fetch" -- a
+ * network-layer flake, not a contract error. Without a retry a single dropped
+ * read blanks out a whole section, and the page then states something false
+ * with confidence ("No evidence has been submitted") rather than admitting it
+ * could not load. Contract-level errors are NOT retried: those are real
+ * answers and repeating them just delays the truth. */
+function isTransientReadError(e: unknown): boolean {
+  const msg = (e instanceof Error ? e.message : String(e)).toLowerCase();
+  return (
+    msg.includes("failed to fetch") ||
+    msg.includes("network") ||
+    msg.includes("timeout") ||
+    msg.includes("econnreset") ||
+    msg.includes("socket") ||
+    msg.includes("unknown rpc error")
+  );
+}
+
+export async function read(functionName: string, args: any[] = [], retries = 3): Promise<any> {
   const address = requireContract();
-  return client.readContract({ address, functionName, args });
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const client = await getGenLayerReadClient();
+      return await client.readContract({ address, functionName, args });
+    } catch (e) {
+      lastError = e;
+      if (!isTransientReadError(e) || attempt === retries) throw e;
+      await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+    }
+  }
+  throw lastError;
 }
