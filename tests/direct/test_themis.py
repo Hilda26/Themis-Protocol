@@ -917,3 +917,234 @@ def test_spoofed_appeal_evidence_url_is_host_checked(
     with direct_vm.expect_revert():
         c.file_appeal(case_id, "new_evidence", "Appealing with a hostless URL.",
                       ["https://localhost/x"])
+
+
+# ---------------------------------------------------------------------------
+# Review fix 1: a bounded resolution/refund path for insufficient_evidence
+# ---------------------------------------------------------------------------
+
+
+def _case_to_non_decisive(direct_vm, c, alice, bob, charlie, at=T0):
+    """Drive a funded case to a non-decisive verdict."""
+    app_id = _register_app(direct_vm, c, alice, at=at)
+    template_id = _create_template(direct_vm, c, alice, app_id, at=at)
+    case_id = _open_case(direct_vm, c, bob, app_id, template_id, charlie, at=at)
+    _fund_case(direct_vm, c, bob, case_id, value=1000, at=at)
+    direct_vm.sender = bob
+    c.close_evidence(case_id)
+    _mock_verdict(direct_vm, verdict="insufficient_evidence", winner="none",
+                  complainant_bps=5000, respondent_bps=5000, confidence=0,
+                  evidence_alignment="none", rule_fit="none")
+    c.request_verdict(case_id)
+    return case_id
+
+
+def test_insufficient_evidence_is_retryable_not_a_dead_end(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
+    """The defect the review caught: no method accepted a non-decisive status,
+    so the case and its escrow were stranded permanently. request_verdict must
+    accept it, because evidence unreachable at one moment may resolve later."""
+    c = _deploy(direct_deploy)
+    case_id = _case_to_non_decisive(direct_vm, c, direct_alice, direct_bob, direct_charlie)
+    assert c.get_case(case_id)["status"] == "insufficient_evidence"
+    assert c.get_case(case_id)["verdict_attempts"] == 1
+
+    _mock_verdict(direct_vm, verdict="respondent_wins", winner="respondent",
+                  complainant_bps=0, respondent_bps=10000)
+    c.request_verdict(case_id)
+    assert c.get_case(case_id)["status"] == "verdict_issued"
+    assert c.get_case_verdict(case_id)["verdict"] == "respondent_wins"
+
+
+def test_retries_are_bounded_and_refund_gate_requires_grace(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
+    c = _deploy(direct_deploy)
+    case_id = _case_to_non_decisive(direct_vm, c, direct_alice, direct_bob, direct_charlie)
+
+    with direct_vm.expect_revert():
+        c.resolve_undecidable_case(case_id)
+
+    for _ in range(2):
+        _mock_verdict(direct_vm, verdict="insufficient_evidence", winner="none",
+                      complainant_bps=5000, respondent_bps=5000, confidence=0,
+                      evidence_alignment="none", rule_fit="none")
+        c.request_verdict(case_id)
+    assert c.get_case(case_id)["verdict_attempts"] == 3
+
+    with direct_vm.expect_revert():
+        c.resolve_undecidable_case(case_id)
+
+    with direct_vm.expect_revert():
+        c.request_verdict(case_id)
+
+
+def test_undecidable_case_refunds_the_complainant_in_full(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie, monkeypatch):
+    """Nothing was adjudicated, so the escrow returns to whoever put it up
+    rather than being split -- splitting would pay the respondent for the
+    record being unreadable."""
+    c = _deploy(direct_deploy)
+    mod = sys.modules.get("_contract_Themis")
+    payments = []
+    monkeypatch.setattr(
+        mod.ThemisProtocol, "_pay",
+        lambda self, to, amount: payments.append((to.as_hex.lower(), int(amount))) if int(amount) else None,
+    )
+    case_id = _case_to_non_decisive(direct_vm, c, direct_alice, direct_bob, direct_charlie)
+    for _ in range(2):
+        _mock_verdict(direct_vm, verdict="insufficient_evidence", winner="none",
+                      complainant_bps=5000, respondent_bps=5000, confidence=0,
+                      evidence_alignment="none", rule_fit="none")
+        c.request_verdict(case_id)
+
+    warp_to(direct_vm, _iso(T0 + 3 * 24 * 3600 + 1))
+    c.resolve_undecidable_case(case_id)
+
+    case = c.get_case(case_id)
+    assert case["status"] == "refunded"
+    assert case["verdict_finalized"] is True
+    assert case["payout_claimed"] is True
+    assert payments == [(_hex(direct_bob).lower(), 1000)]
+
+    with direct_vm.expect_revert():
+        c.resolve_undecidable_case(case_id)
+
+
+# ---------------------------------------------------------------------------
+# Review fix 3: incoherent verdict / appeal field combinations are rejected
+# ---------------------------------------------------------------------------
+
+
+def _verdict_after(direct_vm, c, alice, bob, charlie, **verdict_kwargs):
+    app_id = _register_app(direct_vm, c, alice)
+    template_id = _create_template(direct_vm, c, alice, app_id)
+    case_id = _open_case(direct_vm, c, bob, app_id, template_id, charlie)
+    _fund_case(direct_vm, c, bob, case_id, value=1000)
+    direct_vm.sender = bob
+    c.close_evidence(case_id)
+    _mock_verdict(direct_vm, **verdict_kwargs)
+    c.request_verdict(case_id)
+    return c.get_case_verdict(case_id), c.get_case(case_id)
+
+
+def test_verdict_contradicting_its_winner_is_rejected(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
+    """complainant_wins with winner 'respondent' describes two different
+    settlements; it must not be normalised toward either half."""
+    c = _deploy(direct_deploy)
+    verdict, case = _verdict_after(
+        direct_vm, c, direct_alice, direct_bob, direct_charlie,
+        verdict="complainant_wins", winner="respondent", complainant_bps=10000, respondent_bps=0,
+    )
+    assert verdict["verdict"] == "manual_review_required"
+    assert verdict["reason_code"] == "incoherent_decisive_verdict"
+    assert case["status"] == "manual_review_required"
+
+
+def test_decisive_verdict_with_contradictory_split_is_rejected(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
+    c = _deploy(direct_deploy)
+    verdict, _ = _verdict_after(
+        direct_vm, c, direct_alice, direct_bob, direct_charlie,
+        verdict="respondent_wins", winner="respondent", complainant_bps=5000, respondent_bps=5000,
+    )
+    assert verdict["verdict"] == "manual_review_required"
+    assert verdict["reason_code"] == "incoherent_decisive_verdict"
+
+
+def test_non_decisive_verdict_that_awards_a_winner_is_rejected(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
+    c = _deploy(direct_deploy)
+    verdict, _ = _verdict_after(
+        direct_vm, c, direct_alice, direct_bob, direct_charlie,
+        verdict="insufficient_evidence", winner="complainant", complainant_bps=10000, respondent_bps=0,
+    )
+    assert verdict["reason_code"] == "non_decisive_verdict_awarded_a_winner"
+
+
+def test_split_verdict_allocating_everything_to_one_side_is_rejected(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
+    c = _deploy(direct_deploy)
+    verdict, _ = _verdict_after(
+        direct_vm, c, direct_alice, direct_bob, direct_charlie,
+        verdict="split_settlement", winner="split", complainant_bps=10000, respondent_bps=0,
+    )
+    assert verdict["reason_code"] == "split_verdict_without_a_split"
+
+
+def test_rejected_appeal_that_changes_the_verdict_is_refused(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
+    """An appeal cannot both stand rejected and rewrite the settlement."""
+    c = _deploy(direct_deploy)
+    _, _, case_id = _full_case_to_verdict(direct_vm, c, direct_alice, direct_bob, direct_charlie)
+    direct_vm.sender = direct_charlie
+    c.file_appeal(case_id, "new_evidence", "Contesting the ruling.", [])
+
+    _mock_appeal_verdict(direct_vm, appeal_verdict="appeal_rejected", final_verdict_changed=True,
+                         new_verdict="split_settlement", new_complainant_bps=5000, new_respondent_bps=5000)
+    c.request_appeal_review(case_id)
+
+    appeal = c.get_case_appeal(case_id)
+    assert appeal["result"] == "manual_review_required"
+    assert c.get_case_verdict(case_id)["verdict"] == "complainant_wins"
+
+
+def test_appeal_claiming_a_change_without_a_new_verdict_is_refused(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
+    c = _deploy(direct_deploy)
+    _, _, case_id = _full_case_to_verdict(direct_vm, c, direct_alice, direct_bob, direct_charlie)
+    direct_vm.sender = direct_charlie
+    c.file_appeal(case_id, "new_evidence", "Contesting the ruling.", [])
+
+    _mock_appeal_verdict(direct_vm, appeal_verdict="appeal_granted", final_verdict_changed=True,
+                         new_verdict="", new_complainant_bps=5000, new_respondent_bps=5000)
+    c.request_appeal_review(case_id)
+    assert c.get_case_appeal(case_id)["result"] == "manual_review_required"
+
+
+def test_unchanged_appeal_echoing_the_standing_verdict_is_accepted(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
+    """A model reporting "rejected, nothing changed" while still echoing the
+    standing verdict into new_verdict is redundant, not contradictory. The
+    echo is cleared and the appeal stands -- rejecting it would send
+    legitimate appeals to manual review, which a real StudioNet round showed
+    happening."""
+    c = _deploy(direct_deploy)
+    _, _, case_id = _full_case_to_verdict(direct_vm, c, direct_alice, direct_bob, direct_charlie)
+    direct_vm.sender = direct_charlie
+    c.file_appeal(case_id, "new_evidence", "Contesting the ruling.", [])
+
+    _mock_appeal_verdict(direct_vm, appeal_verdict="appeal_rejected", final_verdict_changed=False,
+                         new_verdict="complainant_wins", new_complainant_bps=10000, new_respondent_bps=0)
+    c.request_appeal_review(case_id)
+
+    appeal = c.get_case_appeal(case_id)
+    assert appeal["result"] == "appeal_rejected"
+    assert c.get_case(case_id)["status"] == "finalized"
+    # The standing verdict is untouched.
+    assert c.get_case_verdict(case_id)["verdict"] == "complainant_wins"
+
+
+# ---------------------------------------------------------------------------
+# Review fix 4: appeal evidence survives delimiter characters intact
+# ---------------------------------------------------------------------------
+
+
+def test_appeal_evidence_with_delimiters_in_page_text_stays_aligned(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    """Page text routinely contains the list delimiter. Under the old
+    delimiter-joined storage that split one excerpt into several entries and
+    desynchronised the url/excerpt/digest lists, so an exhibit could be judged
+    against another exhibit's digest. Structured records must keep each URL
+    with its own excerpt and digest."""
+    c = _deploy(direct_deploy)
+    mod = sys.modules.get("_contract_Themis")
+    _, _, case_id = _full_case_to_verdict(direct_vm, c, direct_alice, direct_bob, direct_charlie)
+
+    pipe_heavy = "<html><body>Nav | Home | Docs | Terms and the substantive clause here.</body></html>"
+    _mock_fetch_ok(direct_vm, body=pipe_heavy)
+    direct_vm.sender = direct_charlie
+    c.file_appeal(case_id, "new_evidence", "Appeal with delimiter-heavy sources.",
+                  ["https://example.com/a", "https://example.com/b"])
+
+    appeal = c.get_case_appeal(case_id)
+    assert appeal["evidence_urls"] == ["https://example.com/a", "https://example.com/b"]
+    assert len(appeal["evidence"]) == 2
+    assert [e["url"] for e in appeal["evidence"]] == ["https://example.com/a", "https://example.com/b"]
+
+    stripped = mod._strip_markup(pipe_heavy)
+    expected = mod._sha256_hex(mod._defang(stripped)[:mod.FETCH_CHARS_PER_URL])
+    for e in appeal["evidence"]:
+        assert e["fetch_ok"] is True
+        assert e["digest"] == expected

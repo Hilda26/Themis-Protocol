@@ -37,6 +37,7 @@ export type CaseStatus =
   | "appeal_under_review"
   | "finalized"
   | "settled"
+  | "refunded"
   | "settlement_failed";
 
 export type Case = {
@@ -55,6 +56,9 @@ export type Case = {
   evidence_deadline: number;
   verdict_finalized: boolean;
   payout_claimed: boolean;
+  verdict_attempts: number;
+  last_attempt_at: number;
+  max_verdict_attempts: number;
 };
 
 export type Evidence = {
@@ -134,6 +138,9 @@ function toCase(c: any): Case {
     created_at: n(c.created_at),
     evidence_deadline: n(c.evidence_deadline),
     funded_wei: BigInt(c.funded_wei ?? 0),
+    verdict_attempts: n(c.verdict_attempts ?? 0),
+    last_attempt_at: n(c.last_attempt_at ?? 0),
+    max_verdict_attempts: n(c.max_verdict_attempts ?? 3),
   };
 }
 
@@ -230,8 +237,20 @@ export const openCase = (p: {
     p.appId, p.templateId, p.respondent, p.caseSummary, p.requestedRemedy, p.evidenceDeadline,
   ]);
 
+/** Every state-changing call below passes a `verify` that reads the case
+ * back and confirms the change actually committed. A round can be reported
+ * successful by the leader and still commit nothing (see writeAndWait), so
+ * the UI reports success only once the new state is readable on-chain. */
+const caseStatusBecomes = (caseId: number, ...expected: string[]) => async () => {
+  const c = await getCase(caseId);
+  return expected.includes(c.status);
+};
+
 export const fundCase = (caseId: number, value: bigint): Promise<WriteResult> =>
-  writeAndWait("fund_case", [caseId], value);
+  writeAndWait("fund_case", [caseId], value, {
+    verify: caseStatusBecomes(caseId, "evidence_open"),
+    verifyLabel: "the funded case",
+  });
 
 export const cancelUnfundedCase = (caseId: number): Promise<WriteResult> =>
   writeAndWait("cancel_unfunded_case", [caseId]);
@@ -249,25 +268,58 @@ export const submitEvidence = (p: {
   writeAndWait("submit_evidence", [p.caseId, p.evidenceType, p.title, p.statement, p.publicUrl]);
 
 export const closeEvidence = (caseId: number): Promise<WriteResult> =>
-  writeAndWait("close_evidence", [caseId]);
+  writeAndWait("close_evidence", [caseId], 0n, {
+    verify: caseStatusBecomes(caseId, "evidence_closed"),
+    verifyLabel: "the closed evidence window",
+  });
 
 export const requestVerdict = (caseId: number): Promise<WriteResult> =>
-  writeAndWait("request_verdict", [caseId]);
+  writeAndWait("request_verdict", [caseId], 0n, {
+    // A non-decisive outcome is a real, committed result, not a failure -
+    // so all of these count as the verdict round having landed.
+    verify: caseStatusBecomes(
+      caseId, "verdict_issued", "manual_review_required", "insufficient_evidence", "unverifiable",
+    ),
+    verifyLabel: "the verdict",
+  });
 
 export const fileAppeal = (caseId: number, basis: string, statement: string, evidenceUrls: string[]): Promise<WriteResult> =>
-  writeAndWait("file_appeal", [caseId, basis, statement, evidenceUrls]);
+  writeAndWait("file_appeal", [caseId, basis, statement, evidenceUrls], 0n, {
+    verify: caseStatusBecomes(caseId, "appeal_window_open"),
+    verifyLabel: "the filed appeal",
+  });
 
 export const requestAppealReview = (caseId: number): Promise<WriteResult> =>
-  writeAndWait("request_appeal_review", [caseId]);
+  writeAndWait("request_appeal_review", [caseId], 0n, {
+    verify: caseStatusBecomes(caseId, "finalized", "manual_review_required"),
+    verifyLabel: "the appeal result",
+  });
 
 export const finalizeCase = (caseId: number): Promise<WriteResult> =>
-  writeAndWait("finalize_case", [caseId]);
+  writeAndWait("finalize_case", [caseId], 0n, {
+    verify: caseStatusBecomes(caseId, "finalized"),
+    verifyLabel: "the finalized case",
+  });
 
 export const claimSettlement = (caseId: number): Promise<WriteResult> =>
-  writeAndWait("claim_settlement", [caseId]);
+  writeAndWait("claim_settlement", [caseId], 0n, {
+    verify: caseStatusBecomes(caseId, "settled"),
+    verifyLabel: "the settled payout",
+  });
 
 export const resolveStaleManualReview = (caseId: number): Promise<WriteResult> =>
-  writeAndWait("resolve_stale_manual_review", [caseId]);
+  writeAndWait("resolve_stale_manual_review", [caseId], 0n, {
+    verify: caseStatusBecomes(caseId, "finalized"),
+    verifyLabel: "the resolved case",
+  });
+
+/** Bounded exit for a case consensus could not decide: refunds the escrow to
+ * the complainant once the attempts are spent and the grace period passed. */
+export const resolveUndecidableCase = (caseId: number): Promise<WriteResult> =>
+  writeAndWait("resolve_undecidable_case", [caseId], 0n, {
+    verify: caseStatusBecomes(caseId, "refunded"),
+    verifyLabel: "the refunded case",
+  });
 
 export const APPEAL_BASES = [
   "new_evidence",

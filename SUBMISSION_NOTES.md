@@ -38,14 +38,15 @@ payout reads, and liveness exits for every way this shape can stall - including 
 escape hatch for a case whose app owner vanished, resolving conservatively as an even
 unadjudicated split so escrow can never be stranded.
 
-Measured results: lint clean (32 methods, 14 view / 18 write), source verified pure ASCII.
-42/42 direct tests passing, including adversarial tests that actually attack the injection
+Measured results: lint clean (33 methods, 14 view / 19 write), source verified pure ASCII.
+53/53 direct tests passing, including adversarial tests that actually attack the injection
 defence and the userinfo URL-spoofing vector (`https://en.wikipedia.org@attacker.test/x` reads as
 Wikipedia but fetches from attacker.test - the true host is parsed, stored, disclosed to both
-panels and flagged in the register). Three real StudioNet integration suites, all reaching consensus on
-the first attempt and all asserting on the consensus status rather than the leader receipt -
-including one that runs the full lifecycle through appeal and a real escrow payout on-chain
-(0.01 GEN escrowed, appeal filed and reviewed, settlement ACCEPTED, second claim rejected).
+panels and flagged in the register). Four real StudioNet integration suites, all asserting on the consensus
+status rather than the leader receipt - including one that runs the full lifecycle through appeal
+and a real escrow payout on-chain (0.01 GEN escrowed, appeal filed and reviewed, settlement
+ACCEPTED, second claim rejected), and one that drives a case into a genuine non-decisive verdict
+and proves the bounded retry-then-refund path that a review asked for.
 
 Together they prove both halves of the guarantee: against irrelevant evidence the panel refused
 to invent a winner ("Both submitted evidence snapshots are irrelevant Wikipedia pages... so the
@@ -62,6 +63,7 @@ consensus round against the recorded dossier.
 
 Live app: https://themis-protocol.vercel.app
 Source: https://github.com/Hilda26/Themis-Protocol
-Contract (StudioNet): 0xf60ED1100DcCb7A61fbB42B2aeb05d96aD865959
+Contract (StudioNet): 0x8AbA3e98F8219671A87682A43428d0E06825441a
+Response to review (v2): REVIEW.md
 Full design rationale: DECISION_RECORD.md
 Contract test/deploy detail: CONTRACT_STATUS.md

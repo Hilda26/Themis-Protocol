@@ -19,6 +19,7 @@ const STATUS_TONE: Record<string, "neutral" | "success" | "warning" | "danger" |
   appeal_under_review: "warning",
   finalized: "success",
   settled: "success",
+  refunded: "neutral",
   settlement_failed: "danger",
 };
 

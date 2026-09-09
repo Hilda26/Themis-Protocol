@@ -3,8 +3,9 @@
 **A reusable, hardened AI-consensus dispute and attestation protocol on GenLayer.**
 
 **Live app:** https://themis-protocol.vercel.app
-**Contract (StudioNet):** [`0xf60ED1100DcCb7A61fbB42B2aeb05d96aD865959`](https://explorer-studio.genlayer.com/address/0xf60ED1100DcCb7A61fbB42B2aeb05d96aD865959)
+**Contract (StudioNet):** [`0x8AbA3e98F8219671A87682A43428d0E06825441a`](https://explorer-studio.genlayer.com/address/0x8AbA3e98F8219671A87682A43428d0E06825441a)
 **Source:** this repo (`contracts/Themis.py`)
+**Review response (v2):** [`REVIEW.md`](REVIEW.md)
 
 ## What it is
 
@@ -79,9 +80,11 @@ Applied from the first submission rather than after a review asked:
   written, and shown in the register - with an explicit warning when a URL embeds credentials
   before its host. There is no allowlist here by design, so this gates nothing; it exists so the
   effective source is never ambiguous to a panel or to a human reading the record.
-- **Liveness exits.** `cancel_unfunded_case` closes out a case that was never funded;
-  `resolve_stale_manual_review` lets anyone resolve a case whose app owner vanished, after a
-  grace period, as an even unadjudicated split. Escrow can never be stranded by an absent owner.
+- **Liveness exits for every way a case can stall.** `cancel_unfunded_case` closes out a case
+  that was never funded. `resolve_undecidable_case` refunds the escrow in full when consensus
+  cannot decide, after bounded retries and a grace period. `resolve_stale_manual_review` lets
+  anyone resolve a case whose app owner vanished, as an even unadjudicated split. Escrow can
+  never be stranded - not by an absent owner, and not by an unreadable record.
 
 ## Three bugs only a real deployment could surface
 

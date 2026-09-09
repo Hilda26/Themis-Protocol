@@ -9,6 +9,7 @@ import {
   getCase, getCaseEvidence, getCaseVerdict, getCaseAppeal, getTemplate, isManualReviewStale,
   fundCase, cancelUnfundedCase, respondToCase, submitEvidence, closeEvidence, requestVerdict,
   fileAppeal, requestAppealReview, finalizeCase, claimSettlement, resolveStaleManualReview,
+  resolveUndecidableCase,
   APPEAL_BASES,
   type Case, type Evidence, type Verdict, type Appeal, type Template,
 } from "@/lib/genlayer/queries";
@@ -20,7 +21,8 @@ const STATUS_TONE: Record<string, "neutral" | "success" | "warning" | "danger" |
   case_opened: "neutral", cancelled: "neutral", evidence_open: "gold", evidence_closed: "gold",
   verdict_issued: "success", manual_review_required: "warning", insufficient_evidence: "warning",
   unverifiable: "warning", appeal_window_open: "warning", appeal_under_review: "warning",
-  finalized: "success", settled: "success", settlement_failed: "danger",
+  finalized: "success", settled: "success", refunded: "neutral",
+  settlement_failed: "danger",
 };
 
 
@@ -414,6 +416,47 @@ export default function CaseDetailPage() {
                 {busy === "stale" ? "Resolving..." : stale ? "Resolve as Even Split" : "Grace period still running"}
               </Button>
             </div>
+          )}
+
+          {["insufficient_evidence", "unverifiable"].includes(c.status) && (
+            <div className="space-y-4">
+              <p className="font-body text-sm text-muted">
+                Consensus could not decide this case on the record. That is not the end of it:
+                evidence that was unreachable or ambiguous once may resolve later, so the panel can
+                be run again - {c.verdict_attempts} of {c.max_verdict_attempts} attempts used.
+              </p>
+              <Button
+                disabled={busy !== null || c.verdict_attempts >= c.max_verdict_attempts}
+                onClick={() => run("retry", () => requestVerdict(c.case_id))}
+              >
+                {busy === "retry"
+                  ? "Judging..."
+                  : c.verdict_attempts >= c.max_verdict_attempts
+                    ? "Attempts exhausted"
+                    : "Retry Verdict"}
+              </Button>
+              <div className="space-y-3 border-t border-line pt-4">
+                <p className="font-body text-sm text-muted">
+                  Once the attempts are spent and the grace period has passed, anyone may close the
+                  case and refund the escrow to the complainant in full. Nothing was adjudicated, so
+                  nobody is paid out of it.
+                </p>
+                <Button
+                  variant="secondary"
+                  disabled={busy !== null}
+                  onClick={() => run("refund", () => resolveUndecidableCase(c.case_id))}
+                >
+                  {busy === "refund" ? "Refunding..." : "Close and Refund Escrow"}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {c.status === "refunded" && (
+            <p className="font-body text-sm text-muted">
+              This case ended undecided. The escrow was refunded to the complainant in full and no
+              winner was recorded.
+            </p>
           )}
 
           {c.status === "finalized" && !c.payout_claimed && (

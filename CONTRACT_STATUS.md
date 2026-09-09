@@ -1,5 +1,27 @@
 # Themis - Contract Status
 
+## v2 - review response
+
+The first submission was reviewed and four items were raised. All four were real; all four are
+fixed and tested. The full point-by-point response is in [`REVIEW.md`](REVIEW.md). In brief:
+
+1. **A bounded resolution path for `insufficient_evidence`.** The serious one: a non-decisive
+   verdict was accepted by *no* method in the contract, so the case and its escrow were stranded
+   permanently. `request_verdict` now accepts a non-decisive status (evidence unreachable once may
+   resolve later), retries are capped at `MAX_VERDICT_ATTEMPTS`, and `resolve_undecidable_case`
+   then refunds the escrow to the complainant in full once a grace period passes. A refund, not a
+   split: nothing was adjudicated, and splitting undecided money would pay the respondent for the
+   record being unreadable.
+2. **The client reports success only on an ACCEPTED receipt and committed state.** It previously
+   had three ways to claim success over a transaction that changed nothing - a swallowed receipt
+   failure, a leader-only check that ignores `UNDETERMINED`, and an allow-list exempting the
+   consensus methods entirely. All three are closed, and every write now verifies the state
+   change is readable back before reporting success.
+3. **Incoherent verdict and appeal fields are rejected**, each with its own `reason_code`, so no
+   settlement path can read a verdict that contradicts itself.
+4. **Appeal evidence is stored as structured records**, not delimiter-joined strings that
+   desynchronised whenever page text contained the delimiter.
+
 ## v1 - initial submission
 
 Themis is a hardened rebuild of an existing reference design for AI-consensus dispute
@@ -129,14 +151,14 @@ contract decision rather than a model one. Two tests pin both directions:
 
 ## Lint
 
-`PYTHONIOENCODING=utf-8 genvm-lint check contracts/Themis.py --json` -> clean pass, **32 methods**
-(14 view, 18 write).
+`PYTHONIOENCODING=utf-8 genvm-lint check contracts/Themis.py --json` -> clean pass, **33 methods**
+(14 view, 19 write).
 
 ## Direct tests
 
 `tests/direct/test_themis.py` + `tests/direct/conftest.py`.
 
-**42 tests, 42 passed (100%).**
+**53 tests, 53 passed (100%).**
 
 Coverage: app registration and validation; template creation (owner-only, verdict-category
 validation); role grant/revoke; protocol fee administration (non-admin rejected, cap enforced);
@@ -199,5 +221,5 @@ dossier, and pays out real escrow exactly once.
 
 ## Deployment
 
-`0xf60ED1100DcCb7A61fbB42B2aeb05d96aD865959` on StudioNet, schema verified via
+`0x8AbA3e98F8219671A87682A43428d0E06825441a` on StudioNet, schema verified via
 `genlayer schema <address>` to match source exactly.

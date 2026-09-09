@@ -153,6 +153,19 @@ MAX_APPEAL_URLS = 5
 # it properly first. Same two-sided liveness-vs-abuse discipline as this
 # author's CoverPool project's abandon_unresolvable_claim.
 MANUAL_REVIEW_STALE_GRACE_SECONDS = 14 * 24 * 3600
+
+# Bounds on the undecidable path. A non-decisive verdict
+# (insufficient_evidence / unverifiable) is not a terminal state and must
+# never strand escrow: request_verdict may be retried, because evidence that
+# was merely unreachable at one moment may resolve later, but retries are
+# finite and the refund exit opens once they are spent AND a grace period has
+# passed. Both gates are required so a transient fetch failure cannot be used
+# to rush a case to refund, while a genuinely undecidable one always ends.
+MAX_VERDICT_ATTEMPTS = 3
+UNDECIDABLE_REFUND_GRACE_SECONDS = 3 * 24 * 3600
+
+# The statuses meaning "consensus ran but could not decide on this record".
+NON_DECISIVE_STATUSES = ("insufficient_evidence", "unverifiable")
 # Caps on recorded evidence. These are sized to hold real page TEXT (markup
 # is stripped before storage), not raw HTML: at 1500 chars of raw body a real
 # page yields nothing but <head> boilerplate, which made every panel rule
@@ -475,6 +488,61 @@ def _parse_and_normalize_verdict(raw, allowed_verdicts: set) -> dict:
 
     short_reason = str(data.get("short_reason", "")).strip()[:240]
 
+    # -- Cross-field coherence -------------------------------------------
+    # Each field above is individually well-formed, which is not the same as
+    # the verdict as a whole making sense. A response saying
+    # `complainant_wins` with `winner: respondent`, or a decisive verdict
+    # paired with an even split, is internally contradictory: two different
+    # settlement paths could later read it and reach two different answers
+    # about who is owed what. Such a verdict is rejected outright rather than
+    # silently normalised toward one of its halves, because there is no way
+    # to know which half the model meant.
+    decisive_expectations = {
+        "complainant_wins": ("complainant", 10000),
+        "respondent_wins": ("respondent", 0),
+    }
+    if verdict in decisive_expectations:
+        expected_winner, expected_bps = decisive_expectations[verdict]
+        if winner != expected_winner or complainant_bps != expected_bps:
+            return _fallback_verdict(
+                allowed_verdicts,
+                "incoherent_decisive_verdict",
+                f"Validator returned {verdict} with winner '{winner}' and a "
+                f"{complainant_bps}/{respondent_bps} split, which contradict each other.",
+            )
+
+    if verdict in FALLBACK_VERDICT_CATEGORIES:
+        # Nothing was decided, so nothing may be awarded to either side.
+        if winner != "none" or complainant_bps != 5000:
+            return _fallback_verdict(
+                allowed_verdicts,
+                "non_decisive_verdict_awarded_a_winner",
+                f"Validator returned the non-decisive verdict {verdict} but still named a "
+                f"winner or an uneven split.",
+            )
+
+    if verdict in ("split_settlement", "partial_refund"):
+        # A split that hands everything to one side is not a split.
+        if complainant_bps in (0, 10000):
+            return _fallback_verdict(
+                allowed_verdicts,
+                "split_verdict_without_a_split",
+                f"Validator returned {verdict} but allocated the entire settlement to one party.",
+            )
+        if winner not in ("split", "complainant", "respondent"):
+            return _fallback_verdict(
+                allowed_verdicts,
+                "split_verdict_invalid_winner",
+                f"Validator returned {verdict} with an incompatible winner '{winner}'.",
+            )
+
+    if winner == "none" and verdict not in FALLBACK_VERDICT_CATEGORIES and verdict != "no_fault":
+        return _fallback_verdict(
+            allowed_verdicts,
+            "decisive_verdict_without_a_winner",
+            f"Validator returned the decisive verdict {verdict} with no winner named.",
+        )
+
     return {
         "verdict": verdict,
         "winner": winner,
@@ -487,6 +555,12 @@ def _parse_and_normalize_verdict(raw, allowed_verdicts: set) -> dict:
         "reason_code": reason_code,
         "short_reason": short_reason,
     }
+
+
+def decisive_appeal_expectations() -> dict:
+    """The settlement split each decisive verdict must carry, used to reject
+    an appeal whose new verdict and split disagree."""
+    return {"complainant_wins": 10000, "respondent_wins": 0}
 
 
 def _parse_and_normalize_appeal(raw, allowed_verdicts: set) -> dict:
@@ -555,6 +629,40 @@ def _parse_and_normalize_appeal(raw, allowed_verdicts: set) -> dict:
 
     short_reason = str(data.get("short_reason", "")).strip()[:240]
 
+    # -- Cross-field coherence -------------------------------------------
+    # An appeal result drives a settlement, so its fields must agree with one
+    # another before it is allowed to. A rejected appeal that also rewrites
+    # the verdict, or a granted one that changes nothing while claiming to,
+    # would leave the case and its payout describing different outcomes.
+    if appeal_verdict == "appeal_rejected" and final_verdict_changed:
+        return _fallback_appeal(
+            "rejected_appeal_changed_the_verdict",
+            "Appeal validator rejected the appeal but also reported changing the verdict.",
+        )
+    if final_verdict_changed and not new_verdict:
+        return _fallback_appeal(
+            "verdict_changed_without_a_new_verdict",
+            "Appeal validator reported a changed verdict but named no replacement.",
+        )
+    if not final_verdict_changed and new_verdict:
+        # Benign redundancy, not a contradiction: models routinely echo the
+        # standing verdict into `new_verdict` while correctly reporting that
+        # nothing changed. The settlement path only ever reads `new_verdict`
+        # when `final_verdict_changed` is true, so the coherent thing to do
+        # is clear the echo rather than reject the appeal. An earlier
+        # revision rejected it, which sent legitimate appeals to manual
+        # review -- the same over-strictness that once made verdict
+        # consensus unreachable, caught here by a real StudioNet round.
+        new_verdict = ""
+    if final_verdict_changed and new_verdict in decisive_appeal_expectations():
+        expected_bps = decisive_appeal_expectations()[new_verdict]
+        if new_complainant_bps != expected_bps:
+            return _fallback_appeal(
+                "incoherent_new_verdict_split",
+                f"Appeal validator returned {new_verdict} with a "
+                f"{new_complainant_bps}/{new_respondent_bps} split, which contradict each other.",
+            )
+
     return {
         "appeal_verdict": appeal_verdict,
         "final_verdict_changed": final_verdict_changed,
@@ -617,6 +725,12 @@ class DisputeCase:
     evidence_deadline: u256
     verdict_finalized: bool
     payout_claimed: bool
+    # Count of consensus rounds that ran and returned a non-decisive
+    # outcome, plus when the most recent one landed. Together these bound
+    # the undecidable path: retry is allowed but finite, and the refund
+    # exit opens only after genuine attempts AND a grace period.
+    verdict_attempts: u32
+    last_attempt_at: u256
 
 
 @allow_storage
@@ -662,19 +776,36 @@ class Verdict:
 
 @allow_storage
 @dataclass
+class AppealEvidenceItem:
+    """One snapshotted appeal exhibit, held as a real storage record.
+
+    An earlier revision packed the parallel url/excerpt/hash lists into
+    LIST_DELIMITER-joined strings. That silently corrupts the record: a
+    delimiter character is ordinary text on real web pages, so any excerpt
+    containing one split into extra entries and threw the three parallel
+    lists out of alignment -- an exhibit could end up displayed and judged
+    against another exhibit's digest. Structured storage removes the
+    failure mode entirely rather than escaping around it, so no settlement
+    path can be reached through a mismatched record."""
+    case_id: u256
+    url: str
+    source_host: str
+    excerpt: str
+    digest: str
+    fetch_ok: bool
+
+
+@allow_storage
+@dataclass
 class Appeal:
     appeal_id: u256
     case_id: u256
     filed_by: Address
     basis: str
     statement: str
-    evidence_urls: str  # LIST_DELIMITER-joined URLs
-    # Parallel LIST_DELIMITER-joined snapshot fields, one entry per URL
-    # above, fetched and hashed at filing time -- same chain-of-custody
-    # discipline as EvidenceItem. "" placeholders keep index alignment
-    # with evidence_urls even when a fetch failed.
-    evidence_excerpts: str
-    evidence_hashes: str
+    # Exhibits live in `appeal_evidence`, keyed by case_id -- never packed
+    # into delimiter-joined strings. See AppealEvidenceItem.
+    evidence_count: u32
     status: str
     result: str
     created_at: u256
@@ -722,6 +853,8 @@ class ThemisProtocol(gl.Contract):
     # Verdicts & appeals
     verdicts: TreeMap[u256, Verdict]
     appeals: TreeMap[u256, Appeal]
+    # Appeal exhibits as structured records, filtered by case_id on read.
+    appeal_evidence: DynArray[AppealEvidenceItem]
     next_appeal_id: u256
 
     # App-scoped roles. Key is "{app_id}:{address_hex}" -> role ("admin" /
@@ -937,6 +1070,8 @@ class ThemisProtocol(gl.Contract):
             evidence_deadline=evidence_deadline,
             verdict_finalized=False,
             payout_claimed=False,
+            verdict_attempts=u32(0),
+            last_attempt_at=u256(0),
         )
         self.case_funded_wei[case_id] = u256(0)
         self.all_case_ids.append(case_id)
@@ -1060,8 +1195,19 @@ class ThemisProtocol(gl.Contract):
         # No sender restriction: any address may trigger validator review once
         # evidence has closed (this already covers app owners and moderators).
         case = self._get_case_or_raise(case_id)
-        if case.status != "evidence_closed":
+        # A non-decisive outcome is explicitly NOT terminal: evidence that was
+        # unreachable or ambiguous at one moment may resolve later, so the
+        # round is retryable from those statuses as well as from
+        # evidence_closed. Retries are bounded by MAX_VERDICT_ATTEMPTS, after
+        # which resolve_undecidable_case refunds rather than letting a case
+        # spin forever.
+        if case.status not in ("evidence_closed",) + NON_DECISIVE_STATUSES:
             raise gl.vm.UserError("verdict request before evidence closes is not allowed")
+        if case.status in NON_DECISIVE_STATUSES and int(case.verdict_attempts) >= MAX_VERDICT_ATTEMPTS:
+            raise gl.vm.UserError(
+                "this case has exhausted its verdict attempts -- use resolve_undecidable_case "
+                "to close it and refund the escrow"
+            )
 
         template = self.templates[case.template_id]
         evidence_items = [e for e in self.all_evidence if e.case_id == case_id]
@@ -1146,6 +1292,10 @@ class ThemisProtocol(gl.Contract):
 
         if verdict_data["verdict"] in FALLBACK_VERDICT_CATEGORIES:
             case.status = verdict_data["verdict"]
+            # Count only rounds that actually ran and failed to decide; this
+            # is what bounds the retry loop and gates the refund exit.
+            case.verdict_attempts = u32(int(case.verdict_attempts) + 1)
+            case.last_attempt_at = u256(_now())
         else:
             case.status = "verdict_issued"
 
@@ -1211,6 +1361,64 @@ class ThemisProtocol(gl.Contract):
         # finalize_case call waiting out a window that was never opened.
         case.status = "finalized"
         case.verdict_finalized = True
+
+    @gl.public.write
+    def resolve_undecidable_case(self, case_id: u256) -> None:
+        """Permissionless, bounded exit for a case consensus could not decide.
+
+        A non-decisive verdict (`insufficient_evidence` / `unverifiable`)
+        previously had no continuation at all: no method accepted those
+        statuses, so the case -- and the escrow inside it -- was stranded
+        permanently. That is the defect this closes.
+
+        The exit is deliberately a REFUND rather than a split. Nothing was
+        adjudicated, so neither party earned anything, and the escrow simply
+        returns to the complainant who put it up: the case ends exactly where
+        it began. Splitting undecided money between the parties would pay the
+        respondent for the record being unreadable, which is an incentive to
+        make it unreadable.
+
+        Both gates must hold, so this cannot be used to dodge a case that
+        would have resolved: MAX_VERDICT_ATTEMPTS consensus rounds must have
+        genuinely run and failed to decide, AND
+        UNDECIDABLE_REFUND_GRACE_SECONDS must have elapsed since the last of
+        them, giving a temporarily unreachable source time to come back.
+        `request_verdict` stays open throughout that window."""
+        case = self._get_case_or_raise(case_id)
+        if case.status not in NON_DECISIVE_STATUSES:
+            raise gl.vm.UserError("case is not in an undecidable state")
+        if int(case.verdict_attempts) < MAX_VERDICT_ATTEMPTS:
+            raise gl.vm.UserError(
+                "not enough failed verdict rounds yet -- retry request_verdict first"
+            )
+        if not (_now() > int(case.last_attempt_at) + UNDECIDABLE_REFUND_GRACE_SECONDS):
+            raise gl.vm.UserError("the undecidable-case grace period has not elapsed yet")
+
+        self.verdicts[case_id] = Verdict(
+            case_id=case_id,
+            verdict="insufficient_evidence",
+            winner="none",
+            complainant_bps=u256(10000),
+            respondent_bps=u256(0),
+            confidence=u256(0),
+            evidence_alignment="none",
+            rule_fit="none",
+            appeal_allowed=False,
+            reason_code="undecidable_refunded",
+            short_reason="Consensus could not decide this case on the record across the permitted "
+                         "attempts, so the escrow is refunded in full to the complainant and the "
+                         "case is closed without an adjudicated winner.",
+            issued_at=u256(_now()),
+        )
+
+        refund = int(self.case_funded_wei.get(case_id, u256(0)))
+        # State flips terminal BEFORE any transfer -- same
+        # checks-effects-interactions ordering as claim_settlement.
+        case.status = "refunded"
+        case.verdict_finalized = True
+        case.payout_claimed = True
+        if refund > 0:
+            self._pay(case.complainant, u256(refund))
 
     @gl.public.write
     def resolve_stale_manual_review(self, case_id: u256) -> None:
@@ -1296,13 +1504,24 @@ class ThemisProtocol(gl.Contract):
 
         # Chain of custody, same discipline as submit_evidence: every
         # appeal URL is fetched and hashed HERE, at filing time, once.
-        # request_appeal_review reads only these recorded snapshots.
-        excerpts = []
-        hashes = []
+        # request_appeal_review reads only these recorded snapshots. Each
+        # exhibit is stored as its own record, so an excerpt containing the
+        # list delimiter cannot desynchronise the url/excerpt/digest
+        # correspondence the way delimiter-joined storage did.
+        count = 0
         for u in evidence_urls:
-            excerpt, digest, _ok = _snapshot_url(u)
-            excerpts.append(excerpt)
-            hashes.append(digest)
+            excerpt, digest, ok = _snapshot_url(u)
+            self.appeal_evidence.append(
+                AppealEvidenceItem(
+                    case_id=case_id,
+                    url=u,
+                    source_host=_url_host(u),
+                    excerpt=excerpt,
+                    digest=digest,
+                    fetch_ok=ok,
+                )
+            )
+            count += 1
 
         appeal_id = self.next_appeal_id
         self.appeals[case_id] = Appeal(
@@ -1311,9 +1530,7 @@ class ThemisProtocol(gl.Contract):
             filed_by=sender,
             basis=basis,
             statement=_defang(statement),
-            evidence_urls=_join_list(evidence_urls),
-            evidence_excerpts=_join_list(excerpts),
-            evidence_hashes=_join_list(hashes),
+            evidence_count=u32(count),
             status="filed",
             result="",
             created_at=u256(_now()),
@@ -1629,6 +1846,11 @@ class ThemisProtocol(gl.Contract):
             "evidence_deadline": int(c.evidence_deadline),
             "verdict_finalized": c.verdict_finalized,
             "payout_claimed": c.payout_claimed,
+            # Exposed so a client can show how many undecidable rounds have
+            # been spent and when the refund exit opens.
+            "verdict_attempts": int(c.verdict_attempts),
+            "last_attempt_at": int(c.last_attempt_at),
+            "max_verdict_attempts": MAX_VERDICT_ATTEMPTS,
         }
 
     def _evidence_to_dict(self, e: EvidenceItem) -> dict:
@@ -1669,7 +1891,16 @@ class ThemisProtocol(gl.Contract):
             "filed_by": a.filed_by.as_hex,
             "basis": a.basis,
             "statement": a.statement,
-            "evidence_urls": _split_list(a.evidence_urls),
+            "evidence_urls": [e.url for e in self._appeal_exhibits(a.case_id)],
+            "evidence": [
+                {
+                    "url": e.url,
+                    "source_host": e.source_host,
+                    "digest": e.digest,
+                    "fetch_ok": e.fetch_ok,
+                }
+                for e in self._appeal_exhibits(a.case_id)
+            ],
             "status": a.status,
             "result": a.result,
             "created_at": int(a.created_at),
@@ -1705,17 +1936,22 @@ class ThemisProtocol(gl.Contract):
             )
         return "\n\n".join(sections)
 
+    def _appeal_exhibits(self, case_id: u256) -> list:
+        return [e for e in self.appeal_evidence if e.case_id == case_id]
+
     def _render_appeal_evidence_block(self, appeal: Appeal) -> str:
-        urls = _split_list(appeal.evidence_urls)
-        excerpts = _split_list(appeal.evidence_excerpts) if appeal.evidence_excerpts else []
-        if not urls:
+        """Reads structured exhibit records, so every URL is shown beside its
+        own excerpt and digest. The delimiter-joined form this replaced could
+        misalign them whenever page text contained the delimiter."""
+        exhibits = self._appeal_exhibits(appeal.case_id)
+        if not exhibits:
             return "None provided."
         parts = []
-        for i, url in enumerate(urls):
-            excerpt = excerpts[i] if i < len(excerpts) else "(not recorded)"
+        for e in exhibits:
+            excerpt = e.excerpt if e.fetch_ok else f"(unavailable at filing: {e.excerpt})"
             parts.append(
-                f"URL as submitted: {url}\n"
-                f"Content was actually fetched from host: {_url_host(url)}\n"
+                f"URL as submitted: {e.url}\n"
+                f"Content was actually fetched from host: {e.source_host}\n"
                 f"Recorded content:\n{FENCE_OPEN}\n{excerpt}\n{FENCE_CLOSE}"
             )
         return "\n\n".join(parts)

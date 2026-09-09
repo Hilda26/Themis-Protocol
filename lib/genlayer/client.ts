@@ -63,23 +63,51 @@ export function requireContract(): `0x${string}` {
 
 export type WriteResult = { hash: `0x${string}`; explorerUrl: string; receipt?: any };
 
-// The methods that spend a real non-deterministic consensus round. These can
-// legitimately land on a fallback verdict (insufficient_evidence /
-// unverifiable / manual_review_required) rather than a hard failure, so the
-// rollback-pattern check below is skipped for them -- same reasoning as this
-// author's CoverPool and Aura clients.
-const NONDET_METHODS = new Set([
-  "request_verdict",
-  "request_appeal_review",
-  "submit_evidence",
-  "file_appeal",
-]);
+/** Normalises the consensus status, which arrives as either the numeric code
+ * or the enum string depending on the endpoint. 5 = ACCEPTED, 6 =
+ * UNDETERMINED, 7 = FINALIZED. */
+function readConsensusStatus(receipt: any): string {
+  const raw = receipt?.status ?? receipt?.transaction_status;
+  const s = String(raw ?? "").toUpperCase();
+  if (s === "5") return "ACCEPTED";
+  if (s === "6") return "UNDETERMINED";
+  if (s === "7") return "FINALIZED";
+  return s;
+}
 
-export async function writeAndWait(functionName: string, args: any[], value: bigint = BigInt(0)): Promise<WriteResult> {
+export type WriteOptions = {
+  /** Reads chain state and resolves true once the intended change is
+   * visible. A write is only reported as successful after this passes, so
+   * the UI can never claim success over state that did not commit. */
+  verify?: () => Promise<boolean>;
+  verifyLabel?: string;
+};
+
+/**
+ * Submits a write and reports success ONLY after the consensus round was
+ * ACCEPTED (or FINALIZED) and, where a check is supplied, the intended state
+ * change is actually readable back.
+ *
+ * This is deliberately strict, because the earlier version could report
+ * success three different ways over a transaction that changed nothing:
+ * it swallowed a failed receipt fetch and returned as though the write had
+ * landed; it inspected only the LEADER receipt's execution_result, which says
+ * the leader ran fine even when validators disagreed and the round committed
+ * nothing; and it exempted the consensus methods from that check entirely.
+ * An UNDETERMINED round is the exact shape of that failure -- the leader
+ * succeeds, the state does not move, and the user is told it worked.
+ */
+export async function writeAndWait(
+  functionName: string,
+  args: any[],
+  value: bigint = BigInt(0),
+  opts: WriteOptions = {},
+): Promise<WriteResult> {
   const { client } = await getGenLayerWriteClient();
   const address = requireContract();
   const raw = await client.writeContract({ address, functionName, args, value });
   const txHash = (typeof raw === "string" ? raw : raw?.hash || raw?.transaction_hash) as `0x${string}`;
+
   let receipt: any;
   try {
     const { TransactionStatus } = await import("genlayer-js/types");
@@ -90,17 +118,59 @@ export async function writeAndWait(functionName: string, args: any[], value: big
       interval: 3000,
     });
   } catch (e) {
-    console.warn("waitForTransactionReceipt failed", e);
+    // Never swallowed: without a receipt we cannot claim the write landed.
+    throw new Error(
+      `Could not confirm ${functionName}: no receipt was returned before the timeout. ` +
+        `The transaction may still be in consensus - check the explorer before retrying. Tx: ${txHash}`,
+    );
   }
+
+  const consensus = readConsensusStatus(receipt);
+  if (consensus === "UNDETERMINED") {
+    throw new Error(
+      `${functionName} did not reach consensus: validators disagreed, so the round was ` +
+        `UNDETERMINED and no state was committed. Nothing was charged or changed - you can ` +
+        `retry it. Tx: ${txHash}`,
+    );
+  }
+  if (consensus && consensus !== "ACCEPTED" && consensus !== "FINALIZED") {
+    throw new Error(`${functionName} ended in consensus status ${consensus}, not ACCEPTED. Tx: ${txHash}`);
+  }
+
+  // The leader's own execution must also not have rolled back. This now
+  // applies to every method, including the consensus ones: a fallback
+  // verdict is a successful execution returning a non-decisive result, which
+  // is not a rollback, so exempting them only ever hid real failures.
   const exec = receipt?.consensus_data?.leader_receipt?.[0] || receipt?.consensus_data?.leader_receipt || receipt;
   const resultCode = exec?.execution_result || exec?.result || receipt?.result || receipt?.execution_result;
   const errMsg = exec?.error_message || exec?.error || receipt?.error_message;
   if (typeof resultCode === "string" && /rollback|reverted|error/i.test(resultCode)) {
-    if (!NONDET_METHODS.has(functionName)) {
-      const tail = errMsg ? ` (${errMsg})` : "";
-      throw new Error(`GenLayer transaction ${functionName} rolled back${tail}. Tx: ${txHash}`);
+    const tail = errMsg ? ` (${errMsg})` : "";
+    throw new Error(`GenLayer transaction ${functionName} rolled back${tail}. Tx: ${txHash}`);
+  }
+
+  // Finally, confirm the committed state really reflects the write. Reads can
+  // briefly trail an accepted round, so this is polled rather than sampled
+  // once.
+  if (opts.verify) {
+    let committed = false;
+    for (let attempt = 0; attempt < 10 && !committed; attempt++) {
+      try {
+        committed = await opts.verify();
+      } catch {
+        committed = false;
+      }
+      if (!committed) await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (!committed) {
+      throw new Error(
+        `${functionName} was accepted but ${opts.verifyLabel || "the expected change"} is not ` +
+          `readable on-chain yet. Reload before retrying, so you do not repeat a write that ` +
+          `did land. Tx: ${txHash}`,
+      );
     }
   }
+
   return { hash: txHash, explorerUrl: `${GENLAYER_STUDIONET.explorerUrl}/tx/${txHash}`, receipt };
 }
 
