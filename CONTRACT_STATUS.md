@@ -1,5 +1,21 @@
 # Themis - Contract Status
 
+## v3 - review response, round 2
+
+A follow-up review found the round-1 fix incomplete in two specific places: the parser
+normalized bad settlement splits instead of rejecting them, and it accepted `appeal_granted` with
+no verdict change. Both are fixed; full detail in [`REVIEW.md`](REVIEW.md).
+
+1. **Bad settlement totals are rejected, not repaired.** `complainant_bps + respondent_bps !=
+   10000` now falls back to `manual_review_required` on both the verdict and appeal paths,
+   instead of discarding one half and recomputing it from the other.
+2. **`appeal_granted` + no change is rejected.** The mirror of the v2 check for
+   `appeal_rejected` + changed, which was never actually implemented despite a comment claiming
+   it was.
+
+Verified: 58/58 direct tests, deployed contract byte-diffed against source (exact match), full
+appeal-and-settlement lifecycle re-run on real StudioNet consensus.
+
 ## v2 - review response
 
 The first submission was reviewed and four items were raised. All four were real; all four are
@@ -221,5 +237,5 @@ dossier, and pays out real escrow exactly once.
 
 ## Deployment
 
-`0x8AbA3e98F8219671A87682A43428d0E06825441a` on StudioNet, schema verified via
+`0xa5a26A7CE72B4D0817D0E09FC5e29B39DFD8118E` on StudioNet, schema verified via
 `genlayer schema <address>` to match source exactly.

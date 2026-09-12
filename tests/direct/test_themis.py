@@ -1148,3 +1148,92 @@ def test_appeal_evidence_with_delimiters_in_page_text_stays_aligned(
     for e in appeal["evidence"]:
         assert e["fetch_ok"] is True
         assert e["digest"] == expected
+
+
+# ---------------------------------------------------------------------------
+# Review round 2: a bad settlement split is REJECTED, never repaired
+# ---------------------------------------------------------------------------
+
+
+def test_verdict_split_not_summing_to_total_is_rejected_not_normalized(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    """A validator returning complainant_bps=6000, respondent_bps=6000 (total
+    12000) must be rejected outright. An earlier revision discarded
+    respondent_bps and recomputed it as 10000 - complainant_bps = 4000,
+    silently treating an inconsistent payout as a valid 6000/4000 verdict."""
+    c = _deploy(direct_deploy)
+    verdict, case = _verdict_after(
+        direct_vm, c, direct_alice, direct_bob, direct_charlie,
+        verdict="split_settlement", winner="split", complainant_bps=6000, respondent_bps=6000,
+    )
+    assert verdict["reason_code"] == "settlement_split_does_not_sum_to_total"
+    assert verdict["verdict"] == "manual_review_required"
+    # Must NOT have been silently repaired to 6000/4000.
+    assert not (verdict["complainant_bps"] == 6000 and verdict["respondent_bps"] == 4000)
+
+
+def test_verdict_split_summing_to_less_than_total_is_rejected(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
+    """The under-total case: 3000 + 3000 = 6000, not 10000."""
+    c = _deploy(direct_deploy)
+    verdict, _ = _verdict_after(
+        direct_vm, c, direct_alice, direct_bob, direct_charlie,
+        verdict="split_settlement", winner="split", complainant_bps=3000, respondent_bps=3000,
+    )
+    assert verdict["reason_code"] == "settlement_split_does_not_sum_to_total"
+
+
+def test_appeal_new_split_not_summing_to_total_is_rejected_not_normalized(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
+    c = _deploy(direct_deploy)
+    _, _, case_id = _full_case_to_verdict(direct_vm, c, direct_alice, direct_bob, direct_charlie)
+    direct_vm.sender = direct_charlie
+    c.file_appeal(case_id, "new_evidence", "Contesting the split.", [])
+
+    _mock_appeal_verdict(direct_vm, appeal_verdict="appeal_granted", final_verdict_changed=True,
+                         new_verdict="split_settlement", new_complainant_bps=7000, new_respondent_bps=7000)
+    c.request_appeal_review(case_id)
+    appeal = c.get_case_appeal(case_id)
+    assert appeal["result"] == "manual_review_required"
+    # The original verdict must be untouched by a rejected, incoherent appeal.
+    assert c.get_case_verdict(case_id)["verdict"] == "complainant_wins"
+
+
+# ---------------------------------------------------------------------------
+# Review round 2: appeal_granted claiming no change is REJECTED
+# ---------------------------------------------------------------------------
+
+
+def test_granted_appeal_that_changes_nothing_is_rejected(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
+    """The gap a review caught still open after round 1: 'appeal_granted'
+    paired with final_verdict_changed=False is contradictory in the same way
+    'appeal_rejected' paired with final_verdict_changed=True already was, but
+    only the rejected+changed half was actually checked."""
+    c = _deploy(direct_deploy)
+    _, _, case_id = _full_case_to_verdict(direct_vm, c, direct_alice, direct_bob, direct_charlie)
+    direct_vm.sender = direct_charlie
+    c.file_appeal(case_id, "new_evidence", "Contesting the ruling.", [])
+
+    _mock_appeal_verdict(direct_vm, appeal_verdict="appeal_granted", final_verdict_changed=False,
+                         new_verdict="", new_complainant_bps=10000, new_respondent_bps=0)
+    c.request_appeal_review(case_id)
+
+    appeal = c.get_case_appeal(case_id)
+    assert appeal["result"] == "manual_review_required"
+    assert c.get_case_verdict(case_id)["verdict"] == "complainant_wins"
+
+
+def test_granted_appeal_that_does_change_the_verdict_is_accepted(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
+    """Confirms the fix above is not over-broad: a coherent granted+changed
+    appeal must still succeed."""
+    c = _deploy(direct_deploy)
+    _, _, case_id = _full_case_to_verdict(direct_vm, c, direct_alice, direct_bob, direct_charlie)
+    direct_vm.sender = direct_charlie
+    c.file_appeal(case_id, "new_evidence", "Contesting the ruling.", [])
+
+    _mock_appeal_verdict(direct_vm, appeal_verdict="appeal_granted", final_verdict_changed=True,
+                         new_verdict="split_settlement", new_complainant_bps=5000, new_respondent_bps=5000)
+    c.request_appeal_review(case_id)
+
+    appeal = c.get_case_appeal(case_id)
+    assert appeal["result"] == "appeal_granted"
+    assert c.get_case_verdict(case_id)["verdict"] == "split_settlement"

@@ -444,8 +444,21 @@ def _parse_and_normalize_verdict(raw, allowed_verdicts: set) -> dict:
             "invalid_settlement_split",
             "Validator returned a non-numeric settlement split, so the case requires manual review.",
         )
+    # An earlier revision silently normalised a bad total by discarding
+    # respondent_bps and recomputing it from complainant_bps -- a validator
+    # reporting 6000/6000 (12000 total) and one reporting 6000/2000 (8000
+    # total) both got rewritten to 6000/4000 and treated as agreeing, even
+    # though only the complainant_bps half of each was ever real. A verdict
+    # whose own two numbers cannot add up to the whole payout is rejected
+    # outright rather than repaired, because there is no way to know which of
+    # the two the validator actually meant.
     if complainant_bps + respondent_bps != 10000:
-        respondent_bps = 10000 - complainant_bps
+        return _fallback_verdict(
+            allowed_verdicts,
+            "settlement_split_does_not_sum_to_total",
+            f"Validator returned complainant_bps={complainant_bps} and respondent_bps="
+            f"{respondent_bps}, which do not sum to the full 10000 bps payout.",
+        )
     if not (0 <= complainant_bps <= 10000) or not (0 <= respondent_bps <= 10000):
         return _fallback_verdict(
             allowed_verdicts,
@@ -605,8 +618,15 @@ def _parse_and_normalize_appeal(raw, allowed_verdicts: set) -> dict:
             "invalid_appeal_split",
             "Appeal validator returned a non-numeric settlement split, so the appeal requires manual review.",
         )
+    # Same discipline as _parse_and_normalize_verdict: a split that does not
+    # sum to the full payout is rejected, not repaired by discarding one half
+    # and recomputing it from the other.
     if new_complainant_bps + new_respondent_bps != 10000:
-        new_respondent_bps = 10000 - new_complainant_bps
+        return _fallback_appeal(
+            "appeal_split_does_not_sum_to_total",
+            f"Appeal validator returned new_complainant_bps={new_complainant_bps} and "
+            f"new_respondent_bps={new_respondent_bps}, which do not sum to the full 10000 bps payout.",
+        )
     if not (0 <= new_complainant_bps <= 10000) or not (0 <= new_respondent_bps <= 10000):
         return _fallback_appeal(
             "invalid_appeal_split_range",
@@ -638,6 +658,16 @@ def _parse_and_normalize_appeal(raw, allowed_verdicts: set) -> dict:
         return _fallback_appeal(
             "rejected_appeal_changed_the_verdict",
             "Appeal validator rejected the appeal but also reported changing the verdict.",
+        )
+    if appeal_verdict == "appeal_granted" and not final_verdict_changed:
+        # The mirror image of the rejected+changed case above -- and the one
+        # a review caught this parser still accepting. "Granted" with
+        # nothing actually changed is the same contradiction in the other
+        # direction: the case and its settlement would describe an appeal
+        # that succeeded and one that altered nothing, at the same time.
+        return _fallback_appeal(
+            "granted_appeal_changed_nothing",
+            "Appeal validator granted the appeal but reported no change to the verdict.",
         )
     if final_verdict_changed and not new_verdict:
         return _fallback_appeal(

@@ -1,4 +1,77 @@
-# Themis - response to review (v2)
+# Themis - response to review
+
+## v3 - the consistency validation was still incomplete
+
+> *"The requested consistency validation is still incomplete: the current parser normalizes some
+> verdict payout totals instead of rejecting them, and it still accepts contradictory appeal
+> status/change combinations such as appeal_granted with no verdict change."*
+
+Both were real, and both were in the exact two places the review named.
+
+**Contract (v3):** [`0xa5a26A7CE72B4D0817D0E09FC5e29B39DFD8118E`](https://explorer-studio.genlayer.com/address/0xa5a26A7CE72B4D0817D0E09FC5e29B39DFD8118E)
+**Live app:** https://themis-protocol.vercel.app
+
+### The parser normalized bad totals instead of rejecting them
+
+`_parse_and_normalize_verdict` and `_parse_and_normalize_appeal` each had a line that looked like
+validation but was actually repair:
+
+```python
+if complainant_bps + respondent_bps != 10000:
+    respondent_bps = 10000 - complainant_bps
+```
+
+A validator returning `complainant_bps=6000, respondent_bps=6000` (summing to 12000, not 10000 -
+an internally inconsistent output) was silently rewritten to `6000/4000` and accepted as a normal
+verdict. The `respondent_bps` half was discarded and recomputed from `complainant_bps` alone,
+which means only one of the model's two numbers was ever real; the contract had no way to know
+whether `complainant_bps` or `respondent_bps` was the one to trust, and picked one arbitrarily.
+This is the same class of problem v2 fixed for cross-field contradictions (a verdict saying
+`complainant_wins` with `winner: respondent`), just left open for the payout math itself.
+
+Fixed by rejecting outright: any split whose two halves do not sum to exactly 10000 bps now falls
+back to `manual_review_required` with `reason_code = "settlement_split_does_not_sum_to_total"`,
+on both the verdict path and the appeal path. Nothing is repaired or guessed.
+
+`test_verdict_split_not_summing_to_total_is_rejected_not_normalized`,
+`test_verdict_split_summing_to_less_than_total_is_rejected`, and
+`test_appeal_new_split_not_summing_to_total_is_rejected_not_normalized` pin all three directions
+(over, under, and on the appeal's new split).
+
+### `appeal_granted` with no verdict change was never actually checked
+
+v2 added a coherence check for `appeal_rejected` paired with `final_verdict_changed=True` - a
+rejected appeal that also claims to have changed the verdict. That check only covered one
+direction. The mirror case, `appeal_granted` paired with `final_verdict_changed=False` - an
+appeal that succeeded but altered nothing - was never checked at all, despite a comment in the
+code claiming it was ("a granted one that changes nothing while claiming to"). The comment
+described the intended behaviour; the code next to it did not implement it.
+
+Fixed with the missing check, symmetric to the one already there:
+
+```python
+if appeal_verdict == "appeal_granted" and not final_verdict_changed:
+    return _fallback_appeal("granted_appeal_changed_nothing", ...)
+```
+
+`test_granted_appeal_that_changes_nothing_is_rejected` pins the fix, and
+`test_granted_appeal_that_does_change_the_verdict_is_accepted` confirms it is not over-broad - a
+coherent granted-and-changed appeal still succeeds.
+
+### Verified
+
+- Lint clean (33 methods), source pure ASCII, **58/58** direct tests (5 new, added for exactly
+  these two gaps).
+- Deployed contract fetched with `genlayer code` and diffed **byte-for-byte** against
+  `contracts/Themis.py` - exact match, not "close enough".
+- The full appeal-and-settlement suite re-run against v3 on real StudioNet consensus: escrow
+  funded, verdict `respondent_wins` reached on the first attempt, a real appeal filed and
+  reviewed (`appeal_rejected`, correctly coherent), settlement `ACCEPTED`, a second claim
+  correctly rejected on-chain.
+
+---
+
+# v2 - response to review
 
 The review raised four items. All four were real, all four are fixed, and each one is pinned by
 a test. Nothing here is a wording change: three of the four could move or strand money, and the

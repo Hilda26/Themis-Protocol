@@ -3,9 +3,9 @@
 **A reusable, hardened AI-consensus dispute and attestation protocol on GenLayer.**
 
 **Live app:** https://themis-protocol.vercel.app
-**Contract (StudioNet):** [`0x8AbA3e98F8219671A87682A43428d0E06825441a`](https://explorer-studio.genlayer.com/address/0x8AbA3e98F8219671A87682A43428d0E06825441a)
+**Contract (StudioNet):** [`0xa5a26A7CE72B4D0817D0E09FC5e29B39DFD8118E`](https://explorer-studio.genlayer.com/address/0xa5a26A7CE72B4D0817D0E09FC5e29B39DFD8118E)
 **Source:** this repo (`contracts/Themis.py`)
-**Review response (v2):** [`REVIEW.md`](REVIEW.md)
+**Review response:** [`REVIEW.md`](REVIEW.md)
 
 ## What it is
 

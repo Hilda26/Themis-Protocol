@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from gltest import get_contract_factory, get_accounts
 from gltest.assertions import tx_execution_succeeded
 
-CONTRACT_ADDRESS = "0x8AbA3e98F8219671A87682A43428d0E06825441a"
+CONTRACT_ADDRESS = "0xa5a26A7CE72B4D0817D0E09FC5e29B39DFD8118E"
 CONTRACT_PATH = "Themis.py"
 
 _PACE_SECONDS = 5
