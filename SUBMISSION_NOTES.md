@@ -39,7 +39,7 @@ escape hatch for a case whose app owner vanished, resolving conservatively as an
 unadjudicated split so escrow can never be stranded.
 
 Measured results: lint clean (33 methods, 14 view / 19 write), source verified pure ASCII.
-58/58 direct tests passing, including adversarial tests that actually attack the injection
+60/60 direct tests passing, including adversarial tests that actually attack the injection
 defence and the userinfo URL-spoofing vector (`https://en.wikipedia.org@attacker.test/x` reads as
 Wikipedia but fetches from attacker.test - the true host is parsed, stored, disclosed to both
 panels and flagged in the register). Four real StudioNet integration suites, all asserting on the consensus
@@ -63,7 +63,7 @@ consensus round against the recorded dossier.
 
 Live app: https://themis-protocol.vercel.app
 Source: https://github.com/Hilda26/Themis-Protocol
-Contract (StudioNet): 0xa5a26A7CE72B4D0817D0E09FC5e29B39DFD8118E
+Contract (StudioNet): 0xED179e2c69f5DB2B2b91498644d7521533f579c5
 Response to review: REVIEW.md
 Full design rationale: DECISION_RECORD.md
 Contract test/deploy detail: CONTRACT_STATUS.md

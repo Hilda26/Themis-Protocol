@@ -1,5 +1,77 @@
 # Themis - response to review
 
+## v4 - independent pre-submission audit found one further gap
+
+Before resubmitting v3, an adversarial audit was run against it rather than trusting that the v3
+fix was complete. The audit deliberately did not trust prior test names, comments, or commit
+messages -- only actual behavior of the deployed parser, attacked directly.
+
+**Contract (v4):** [`0xED179e2c69f5DB2B2b91498644d7521533f579c5`](https://explorer-studio.genlayer.com/address/0xED179e2c69f5DB2B2b91498644d7521533f579c5)
+**Live app:** https://themis-protocol.vercel.app
+
+### What the audit found
+
+v3 correctly rejects the *literal* reviewer scenario (`appeal_granted` + `final_verdict_changed:
+false`). But `_parse_and_normalize_appeal` has no access to the verdict actually stored on the
+case -- it only sees the appeal response in isolation. That let a substantively identical bypass
+through: a model can set `final_verdict_changed: true` and propose a `new_verdict` /
+`new_complainant_bps` that are byte-identical to the verdict already on record. Every field-level
+coherence check in the parser passes -- `new_verdict` is in the allowed set, the split matches
+`decisive_appeal_expectations()`, `changed=true` with a non-empty verdict -- because nothing there
+is actually contradictory *within the appeal response itself*. It is only incoherent against
+context the parser never had.
+
+Reproduced directly against the (pre-fix) contract:
+
+```
+original verdict:  respondent_wins, 0/10000 bps
+appeal response:   appeal_verdict=appeal_granted, final_verdict_changed=TRUE,
+                    new_verdict=respondent_wins, new_complainant_bps=0, new_respondent_bps=10000
+result (pre-fix):  appeal.result = "appeal_granted"   <- accepted, nothing had changed
+```
+
+This is the same defect the reviewer named, wearing a different boolean value.
+
+### The fix
+
+`_parse_and_normalize_appeal` cannot fix this -- it never sees the stored verdict. The check was
+added at the one place that has both the appeal's output and the contract's committed state:
+`request_appeal_review`, immediately after the equivalence-principle round returns its
+already-agreed result and before that result is applied to storage:
+
+```python
+if (
+    appeal_data["appeal_verdict"] == "appeal_granted"
+    and appeal_data["final_verdict_changed"]
+    and appeal_data["new_verdict"] == verdict.verdict
+    and appeal_data["new_complainant_bps"] == int(verdict.complainant_bps)
+):
+    appeal_data = _fallback_appeal("granted_appeal_proposed_no_actual_change", ...)
+```
+
+This is deterministic and safe post-consensus: every validator executing the transaction reads
+the same already-agreed `appeal_data` and the same already-committed `verdict` storage, so the
+comparison produces an identical result on every node -- it introduces no new non-determinism.
+
+`test_audit_REPEAT_appeal_granted_noop_replacement_now_rejected` reproduces the exact bypass
+above against the fixed contract and asserts it is now rejected;
+`test_audit_REPEAT_appeal_granted_with_genuine_change_still_accepted` confirms the fix is not
+over-broad -- a real replacement verdict is still accepted.
+
+### Verified
+
+- 60/60 direct tests (2 added specifically for this).
+- Deployed contract (`0xED179e2c69f5DB2B2b91498644d7521533f579c5`) fetched with `genlayer code`
+  and byte-diffed against `contracts/Themis.py` -- exact match (92,408 chars).
+- Full appeal-and-settlement lifecycle re-run on real StudioNet consensus after the fix: escrow
+  funded, verdict reached, a real appeal filed and reviewed (`appeal_rejected`, coherent),
+  settlement `ACCEPTED`, double-claim rejected on-chain.
+- Payout-total validation was re-attacked from six directions (under-total, over-total, rescaled
+  units, float-rounding mismatch, string-typed numbers, and a correctly-summing control) during
+  the same audit and found to have no remaining bypass.
+
+---
+
 ## v3 - the consistency validation was still incomplete
 
 > *"The requested consistency validation is still incomplete: the current parser normalizes some

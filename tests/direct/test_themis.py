@@ -1237,3 +1237,114 @@ def test_granted_appeal_that_does_change_the_verdict_is_accepted(direct_vm, dire
     appeal = c.get_case_appeal(case_id)
     assert appeal["result"] == "appeal_granted"
     assert c.get_case_verdict(case_id)["verdict"] == "split_settlement"
+
+CONTRACT = "contracts/Themis.py"
+T0 = 1_735_689_600
+
+
+def _iso(epoch_seconds: int) -> str:
+    return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _hex(addr):
+    return addr.as_hex if hasattr(addr, "as_hex") else "0x" + addr.hex()
+
+
+def _mock_raw(direct_vm, payload_str):
+    direct_vm.clear_mocks()
+    direct_vm.mock_web(r".*", {"status": 200, "body": "<html>e</html>"})
+    direct_vm.mock_llm(r".*", payload_str)
+
+
+def _setup_case(direct_vm, c, alice, bob, charlie):
+    direct_vm.warp(_iso(T0))
+    direct_vm.sender = alice
+    app_id = c.register_app("Marketplace X", "marketplacex.example", "A peer-to-peer goods marketplace.")
+    direct_vm.warp(_iso(T0))
+    direct_vm.sender = alice
+    template_id = c.create_template(
+        app_id, "Buyer/Seller Dispute", "marketplace_order",
+        "The seller must deliver goods matching the listing description within the agreed window. "
+        "If goods are not as described or not delivered, the buyer is entitled to a refund.",
+        "Order confirmation, delivery tracking, and photos if damaged.",
+        ["complainant_wins", "respondent_wins", "split_settlement", "no_fault"],
+        "split_payment", True, 3600, True,
+    )
+    direct_vm.warp(_iso(T0))
+    direct_vm.sender = bob
+    case_id = c.open_case(app_id, template_id, _hex(charlie),
+                           "Buyer ordered a laptop, seller shipped an empty box instead.",
+                           "Full refund of the purchase price.", T0 + 7 * 24 * 3600)
+    direct_vm.warp(_iso(T0))
+    direct_vm.sender = bob
+    direct_vm.value = 1000
+    c.fund_case(case_id)
+    direct_vm.value = 0
+    direct_vm.warp(_iso(T0))
+    direct_vm.sender = bob
+    c.close_evidence(case_id)
+    return case_id
+
+
+def test_audit_REPEAT_appeal_granted_noop_replacement_now_rejected(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    """Re-run of the exact confirmed bypass from the pre-fix audit:
+    appeal_verdict='appeal_granted', final_verdict_changed=True, new_verdict
+    identical to the current verdict. Must now be REJECTED."""
+    c = direct_deploy(CONTRACT)
+    case_id = _setup_case(direct_vm, c, direct_alice, direct_bob, direct_charlie)
+    _mock_raw(direct_vm,
+        '{"verdict": "respondent_wins", "winner": "respondent", "complainant_bps": 0, '
+        '"respondent_bps": 10000, "confidence": 90, "evidence_alignment": "strong", '
+        '"rule_fit": "strong", "appeal_allowed": true, "reason_code": "x", "short_reason": "y"}')
+    c.request_verdict(case_id)
+    original_verdict = c.get_case_verdict(case_id)
+    direct_vm.sender = direct_charlie
+    c.file_appeal(case_id, "new_evidence", "Contesting the ruling.", [])
+
+    _mock_raw(direct_vm,
+        '{"appeal_verdict": "appeal_granted", "final_verdict_changed": true, '
+        '"new_verdict": "respondent_wins", "new_complainant_bps": 0, "new_respondent_bps": 10000, '
+        '"confidence": 90, "reason_code": "x", "short_reason": "y"}')
+    c.request_appeal_review(case_id)
+
+    appeal = c.get_case_appeal(case_id)
+    new_verdict = c.get_case_verdict(case_id)
+    print(f"\n[RE-AUDIT] appeal.result={appeal['result']!r}  "
+          f"original=({original_verdict['verdict']},{original_verdict['complainant_bps']}/{original_verdict['respondent_bps']})  "
+          f"new=({new_verdict['verdict']},{new_verdict['complainant_bps']}/{new_verdict['respondent_bps']})")
+    assert appeal["result"] == "manual_review_required", (
+        f"BYPASS STILL PRESENT: appeal_granted with a no-op replacement was accepted! {appeal}"
+    )
+    assert appeal["reason_code" if "reason_code" in appeal else "result"]  # smoke check on shape
+    print("[RE-AUDIT] PASS: no-op appeal_granted bypass is closed")
+
+
+def test_audit_REPEAT_appeal_granted_with_genuine_change_still_accepted(
+    direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie
+):
+    """Confirms the fix is not over-broad: a genuinely different replacement
+    verdict must still be accepted as appeal_granted."""
+    c = direct_deploy(CONTRACT)
+    case_id = _setup_case(direct_vm, c, direct_alice, direct_bob, direct_charlie)
+    _mock_raw(direct_vm,
+        '{"verdict": "respondent_wins", "winner": "respondent", "complainant_bps": 0, '
+        '"respondent_bps": 10000, "confidence": 90, "evidence_alignment": "strong", '
+        '"rule_fit": "strong", "appeal_allowed": true, "reason_code": "x", "short_reason": "y"}')
+    c.request_verdict(case_id)
+    direct_vm.sender = direct_charlie
+    c.file_appeal(case_id, "new_evidence", "Contesting the ruling.", [])
+
+    _mock_raw(direct_vm,
+        '{"appeal_verdict": "appeal_granted", "final_verdict_changed": true, '
+        '"new_verdict": "complainant_wins", "new_complainant_bps": 10000, "new_respondent_bps": 0, '
+        '"confidence": 90, "reason_code": "x", "short_reason": "y"}')
+    c.request_appeal_review(case_id)
+
+    appeal = c.get_case_appeal(case_id)
+    new_verdict = c.get_case_verdict(case_id)
+    print(f"\n[RE-AUDIT control] appeal.result={appeal['result']!r} new_verdict={new_verdict['verdict']!r}")
+    assert appeal["result"] == "appeal_granted", f"FAIL: a genuine change was wrongly rejected! {appeal}"
+    assert new_verdict["verdict"] == "complainant_wins"
+    print("[RE-AUDIT control] PASS: genuine change still accepted")

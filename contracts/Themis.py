@@ -1626,6 +1626,27 @@ class ThemisProtocol(gl.Contract):
         )
         appeal_data = json.loads(appeal_json)
 
+        # A model can claim `final_verdict_changed=True` while proposing a
+        # replacement verdict byte-identical to the one already on record --
+        # a no-op appeal wearing "changed" as a disguise. The parser cannot
+        # catch this: it never sees the actual stored verdict, only the
+        # appeal response. This is the one place that has both, so the
+        # comparison happens here, against `verdict` as committed on-chain
+        # BEFORE this round -- deterministic and identical on every
+        # validator, since it reads only already-agreed appeal_data and
+        # already-committed contract state, not anything non-deterministic.
+        if (
+            appeal_data["appeal_verdict"] == "appeal_granted"
+            and appeal_data["final_verdict_changed"]
+            and appeal_data["new_verdict"] == verdict.verdict
+            and appeal_data["new_complainant_bps"] == int(verdict.complainant_bps)
+        ):
+            appeal_data = _fallback_appeal(
+                "granted_appeal_proposed_no_actual_change",
+                "Appeal validator granted the appeal and reported a change, but the proposed "
+                "replacement verdict is identical to the one already on record.",
+            )
+
         if appeal_data["final_verdict_changed"]:
             verdict.verdict = appeal_data["new_verdict"]
             verdict.complainant_bps = u256(appeal_data["new_complainant_bps"])

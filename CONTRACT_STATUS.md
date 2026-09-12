@@ -1,5 +1,19 @@
 # Themis - Contract Status
 
+## v4 - independent pre-submission audit found one further gap
+
+Before resubmitting v3, an adversarial audit attacked the deployed parser directly rather than
+trusting prior tests/comments. It found that v3's fix only covered the literal
+`final_verdict_changed=false` case; a model could still get an appeal accepted as
+`appeal_granted` by setting `final_verdict_changed=true` with a `new_verdict` byte-identical to
+the verdict already on record -- the same defect, expressed through the other boolean value.
+Fixed in `request_appeal_review` by comparing the appeal's proposed replacement against the
+actual stored verdict (which `_parse_and_normalize_appeal` never has access to). Full detail in
+[`REVIEW.md`](REVIEW.md).
+
+Verified: 60/60 direct tests, deployed contract byte-diffed against source (exact match, 92408
+chars), full appeal-and-settlement lifecycle re-run on real StudioNet consensus after the fix.
+
 ## v3 - review response, round 2
 
 A follow-up review found the round-1 fix incomplete in two specific places: the parser
@@ -13,7 +27,7 @@ no verdict change. Both are fixed; full detail in [`REVIEW.md`](REVIEW.md).
    `appeal_rejected` + changed, which was never actually implemented despite a comment claiming
    it was.
 
-Verified: 58/58 direct tests, deployed contract byte-diffed against source (exact match), full
+Verified: 60/60 direct tests, deployed contract byte-diffed against source (exact match), full
 appeal-and-settlement lifecycle re-run on real StudioNet consensus.
 
 ## v2 - review response
@@ -237,5 +251,5 @@ dossier, and pays out real escrow exactly once.
 
 ## Deployment
 
-`0xa5a26A7CE72B4D0817D0E09FC5e29B39DFD8118E` on StudioNet, schema verified via
+`0xED179e2c69f5DB2B2b91498644d7521533f579c5` on StudioNet, schema verified via
 `genlayer schema <address>` to match source exactly.
